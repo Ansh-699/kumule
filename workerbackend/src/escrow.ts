@@ -214,19 +214,36 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         const umi = getUmi(c.env.SOLANA_RPC_URL)
         const asset = await fetchAssetV1(umi, umiPublicKey(assetId))
 
+        const depositAssetKeys = [
+            { pubkey: sellerPubkey, isSigner: true, isWritable: true },
+            { pubkey: assetPubkey, isSigner: false, isWritable: true },
+            { pubkey: escrowPDA, isSigner: false, isWritable: true },
+            { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+            { pubkey: new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'), isSigner: false, isWritable: false },
+        ]
+
+        // Add collection account if asset belongs to a collection
+        // Must come AFTER mpl_core_program but BEFORE plugin accounts
+        if (asset.updateAuthority.type === 'Collection' && asset.updateAuthority.address) {
+            depositAssetKeys.push({
+                pubkey: new PublicKey(asset.updateAuthority.address.toString()),
+                isSigner: false,
+                isWritable: false
+            })
+        }
+
+        // Add mpl-core plugin accounts if needed
+        if (asset.pluginHeader) {
+            depositAssetKeys.push({
+                pubkey: new PublicKey(asset.pluginHeader.key),
+                isSigner: false,
+                isWritable: true
+            })
+        }
+
         const depositAssetIx = new TransactionInstruction({
             programId: ESCROW_PROGRAM_ID,
-            keys: [
-                { pubkey: sellerPubkey, isSigner: true, isWritable: true },
-                { pubkey: assetPubkey, isSigner: false, isWritable: true },
-                { pubkey: escrowPDA, isSigner: false, isWritable: true },
-                { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-                { pubkey: new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'), isSigner: false, isWritable: false },
-                // Add mpl-core plugin accounts if needed
-                ...(asset.pluginHeader ? [
-                    { pubkey: new PublicKey(asset.pluginHeader.key), isSigner: false, isWritable: true }
-                ] : []),
-            ],
+            keys: depositAssetKeys,
             data: Buffer.from(IDL.instructions[1].discriminator),
         })
 
@@ -268,20 +285,36 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         const umi = getUmi(c.env.SOLANA_RPC_URL)
         const asset = await fetchAssetV1(umi, umiPublicKey(assetId))
 
+        const buyAssetKeys = [
+            { pubkey: buyerPubkey, isSigner: true, isWritable: true },
+            { pubkey: assetPubkey, isSigner: false, isWritable: true },
+            { pubkey: sellerPubkey, isSigner: false, isWritable: true },
+            { pubkey: escrowPDA, isSigner: false, isWritable: true },
+            { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+            { pubkey: new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'), isSigner: false, isWritable: false },
+        ]
+
+        // Add collection account if asset belongs to a collection
+        if (asset.updateAuthority.type === 'Collection' && asset.updateAuthority.address) {
+            buyAssetKeys.push({
+                pubkey: new PublicKey(asset.updateAuthority.address.toString()),
+                isSigner: false,
+                isWritable: false
+            })
+        }
+
+        // Add mpl-core plugin accounts if needed
+        if (asset.pluginHeader) {
+            buyAssetKeys.push({
+                pubkey: new PublicKey(asset.pluginHeader.key),
+                isSigner: false,
+                isWritable: true
+            })
+        }
+
         const buyAssetIx = new TransactionInstruction({
             programId: ESCROW_PROGRAM_ID,
-            keys: [
-                { pubkey: buyerPubkey, isSigner: true, isWritable: true },
-                { pubkey: assetPubkey, isSigner: false, isWritable: true },
-                { pubkey: sellerPubkey, isSigner: false, isWritable: true },
-                { pubkey: escrowPDA, isSigner: false, isWritable: true },
-                { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-                { pubkey: new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'), isSigner: false, isWritable: false },
-                // Add mpl-core plugin accounts if needed
-                ...(asset.pluginHeader ? [
-                    { pubkey: new PublicKey(asset.pluginHeader.key), isSigner: false, isWritable: true }
-                ] : []),
-            ],
+            keys: buyAssetKeys,
             data: Buffer.from(IDL.instructions[2].discriminator),
         })
 
@@ -322,19 +355,35 @@ export const cancelListing = async (c: Context<{ Bindings: CloudflareBindings }>
         const umi = getUmi(c.env.SOLANA_RPC_URL)
         const asset = await fetchAssetV1(umi, umiPublicKey(assetId))
 
+        const cancelEscrowKeys = [
+            { pubkey: sellerPubkey, isSigner: true, isWritable: true },
+            { pubkey: assetPubkey, isSigner: false, isWritable: true },
+            { pubkey: escrowPDA, isSigner: false, isWritable: true },
+            { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+            { pubkey: new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'), isSigner: false, isWritable: false },
+        ]
+
+        // Add collection account if asset belongs to a collection
+        if (asset.updateAuthority.type === 'Collection' && asset.updateAuthority.address) {
+            cancelEscrowKeys.push({
+                pubkey: new PublicKey(asset.updateAuthority.address.toString()),
+                isSigner: false,
+                isWritable: false
+            })
+        }
+
+        // Add mpl-core plugin accounts if needed
+        if (asset.pluginHeader) {
+            cancelEscrowKeys.push({
+                pubkey: new PublicKey(asset.pluginHeader.key),
+                isSigner: false,
+                isWritable: true
+            })
+        }
+
         const cancelEscrowIx = new TransactionInstruction({
             programId: ESCROW_PROGRAM_ID,
-            keys: [
-                { pubkey: sellerPubkey, isSigner: true, isWritable: true },
-                { pubkey: assetPubkey, isSigner: false, isWritable: true },
-                { pubkey: escrowPDA, isSigner: false, isWritable: true },
-                { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-                { pubkey: new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'), isSigner: false, isWritable: false },
-                // Add mpl-core plugin accounts if needed
-                ...(asset.pluginHeader ? [
-                    { pubkey: new PublicKey(asset.pluginHeader.key), isSigner: false, isWritable: true }
-                ] : []),
-            ],
+            keys: cancelEscrowKeys,
             data: Buffer.from(IDL.instructions[3].discriminator),
         })
 
