@@ -112,7 +112,16 @@ export const UserNftList = () => {
 
     return (
         <div className="w-full">
-            <h2 className="text-2xl font-bold mb-4">My NFTs</h2>
+            <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-bold">My NFTs</h2>
+                <button
+                    onClick={loadNfts}
+                    disabled={loading}
+                    className="bg-secondary text-secondary-foreground hover:bg-secondary/80 h-9 px-3 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+                >
+                    {loading ? 'Refreshing...' : 'Refresh'}
+                </button>
+            </div>
             {nfts.length === 0 ? (
                 <p className="text-muted-foreground">You don't have any NFTs.</p>
             ) : (

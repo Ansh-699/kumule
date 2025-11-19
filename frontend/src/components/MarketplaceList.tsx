@@ -167,7 +167,16 @@ export const MarketplaceList = () => {
 
     return (
         <div className="w-full">
-            <h2 className="text-2xl font-bold mb-4">Marketplace</h2>
+            <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-bold">Marketplace</h2>
+                <button
+                    onClick={loadListings}
+                    disabled={loading}
+                    className="bg-secondary text-secondary-foreground hover:bg-secondary/80 h-9 px-3 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+                >
+                    {loading ? 'Refreshing...' : 'Refresh'}
+                </button>
+            </div>
             {listings.length === 0 ? (
                 <p className="text-muted-foreground">No NFTs listed in the marketplace.</p>
             ) : (
