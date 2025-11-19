@@ -1,0 +1,66 @@
+import { Context } from 'hono'
+import { Buffer } from 'buffer'
+import { getUmi } from './umi'
+import { generateSigner, publicKey } from '@metaplex-foundation/umi'
+import { createV1 } from '@metaplex-foundation/mpl-core'
+import { base58 } from '@metaplex-foundation/umi/serializers'
+
+export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    try {
+        const body = await c.req.json()
+        const { uri, name, owner } = body
+
+        if (!uri || !name || !owner) {
+            return c.text('Missing required fields: uri, name, owner', 400)
+        }
+
+        const umi = getUmi(c.env.SOLANA_RPC_URL)
+        const ownerKey = publicKey(owner)
+        const asset = generateSigner(umi)
+
+        // Create a "NoopSigner" for the owner so Umi knows they are a signer/payer.
+        const userSigner = {
+            publicKey: ownerKey,
+            signMessage: async (msg: Uint8Array) => msg,
+            signTransaction: async (tx: any) => tx,
+            signAllTransactions: async (txs: any[]) => txs,
+        }
+
+        // Create the transaction builder
+        // We set the owner as the updateAuthority and owner of the asset.
+        const builder = createV1(umi, {
+            asset,
+            name,
+            uri,
+            owner: ownerKey,
+            authority: userSigner, // User is the authority
+            payer: userSigner,     // User is the payer
+        })
+
+        // Build the transaction
+        // We set the fee payer to the user and fetch the latest blockhash.
+        const builderWithBlockhash = await builder
+            .setFeePayer(userSigner)
+            .setLatestBlockhash(umi)
+
+        const tx = await builderWithBlockhash.build(umi)
+
+        // IMPORTANT: The asset signer needs to sign the transaction
+        // This is partial signing - the backend signs with the asset, 
+        // then the frontend will sign with the user's wallet
+        const signedTx = await asset.signTransaction(tx)
+
+        // Serialize the partially-signed transaction
+        const serializedTx = umi.transactions.serialize(signedTx)
+        const base64Tx = Buffer.from(serializedTx).toString('base64')
+
+        return c.json({
+            transaction: base64Tx,
+            mint: asset.publicKey.toString()
+        })
+
+    } catch (error) {
+        console.error('Mint error:', error)
+        return c.text(`Mint failed: ${error}`, 500)
+    }
+}
