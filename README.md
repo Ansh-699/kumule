@@ -1,7 +1,27 @@
-# NFT Marketplace
-![NFT Marketplace](asset/marketplace.jpg)
+## NFT Marketplace
+<p align="center">
+  <img src="asset/nftmarketplace.jpg" alt="NFT Marketplace" width="400" height="400" />
+</p>
+
 
 A decentralized NFT marketplace on Solana Devnet using Anchor, MPL Core, and Cloudflare Workers.
+
+## User Story: Mint, List, and Buy NFTs
+
+### 1. Mint an NFT:
+- The user uploads their image and details (like title, description) to the platform.
+- The system generates an NFT (a unique digital item) based on the uploaded details.
+
+### 2. List an NFT for Sale:
+- The user decides to list their minted NFT for sale.
+- The system securely stores the NFT and prepares it for sale.
+- The user confirms the listing, and the NFT is now available for others to buy.
+
+### 3. Buy an NFT:
+- A buyer browses the marketplace and selects an NFT they want to purchase.
+- The system processes the payment and transfers the NFT to the buyer.
+- The buyer completes the transaction, and the NFT is now in their wallet.
+
 
 ## Architecture Flow
 
