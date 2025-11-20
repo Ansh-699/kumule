@@ -1,10 +1,10 @@
 # NFT Marketplace
+![NFT Marketplace](asset/marketplace.jpg)
 
 A decentralized NFT marketplace on Solana Devnet using Anchor, MPL Core, and Cloudflare Workers.
 
 ## Architecture Flow
 
-1.  **Minting**:
     *   User uploads image and metadata to Irys (decentralized storage) via the Frontend.
     *   Frontend sends metadata URI to Backend (`/mint`).
     *   Backend creates a mint transaction, signs it with a generated asset signer (partial sign), and returns it.
