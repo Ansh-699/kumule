@@ -4,6 +4,11 @@
 </p>
 
 
+<p align="center">
+  <img src="asset/image.png" alt="Architectural diagram" width="400" height="400" />
+</p>
+
+
 A decentralized NFT marketplace on Solana Devnet using Anchor, MPL Core, and Cloudflare Workers.
 
 ## User Story: Mint, List, and Buy NFTs
