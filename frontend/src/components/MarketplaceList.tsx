@@ -3,6 +3,8 @@ import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { API_BASE_URL } from '@/services/api';
 import { VersionedTransaction } from '@solana/web3.js';
 import { Buffer } from 'buffer';
+import { ConfirmDialog } from './ConfirmDialog';
+import { StatusModal, type StatusType } from './StatusModal';
 
 interface Listing {
     escrow: string;
@@ -16,6 +18,7 @@ interface Listing {
 const ListingCard = ({ listing, onBuy }: { listing: Listing, onBuy: (listing: Listing) => void }) => {
     const [metadata, setMetadata] = useState<any>(null);
     const [loading, setLoading] = useState(true);
+    const { publicKey } = useWallet();
 
     useEffect(() => {
         const fetchMetadata = async () => {
@@ -36,6 +39,8 @@ const ListingCard = ({ listing, onBuy }: { listing: Listing, onBuy: (listing: Li
         };
         fetchMetadata();
     }, [listing.uri]);
+
+    const isOwner = publicKey && listing.seller === publicKey.toString();
 
     return (
         <div className="border rounded-lg p-4 space-y-3 flex flex-col h-full">
@@ -73,9 +78,13 @@ const ListingCard = ({ listing, onBuy }: { listing: Listing, onBuy: (listing: Li
                 </div>
                 <button
                     onClick={() => onBuy(listing)}
-                    className="bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2 rounded-md text-sm font-medium transition-colors"
+                    disabled={!!isOwner}
+                    className={`h-10 px-4 py-2 rounded-md text-sm font-medium transition-colors ${isOwner
+                        ? 'bg-muted text-muted-foreground cursor-not-allowed'
+                        : 'bg-primary text-primary-foreground hover:bg-primary/90'
+                        }`}
                 >
-                    Buy
+                    {isOwner ? 'You Own This' : 'Buy'}
                 </button>
             </div>
         </div>
@@ -87,6 +96,14 @@ export const MarketplaceList = () => {
     const { connection } = useConnection();
     const [listings, setListings] = useState<Listing[]>([]);
     const [loading, setLoading] = useState(false);
+
+    const [confirmDialog, setConfirmDialog] = useState<{ isOpen: boolean; listing: Listing | null }>({ isOpen: false, listing: null });
+    const [statusModal, setStatusModal] = useState<{ isOpen: boolean; status: StatusType; title: string; message: string }>({
+        isOpen: false,
+        status: 'idle',
+        title: '',
+        message: '',
+    });
 
     useEffect(() => {
         loadListings();
@@ -110,17 +127,32 @@ export const MarketplaceList = () => {
         }
     };
 
-    const handleBuy = async (listing: Listing) => {
+    const initiateBuy = (listing: Listing) => {
         if (!walletPublicKey || !signTransaction) {
-            alert('Please connect your wallet to buy.');
+            setStatusModal({
+                isOpen: true,
+                status: 'error',
+                title: 'Wallet Not Connected',
+                message: 'Please connect your wallet to buy NFTs.',
+            });
             return;
         }
+        setConfirmDialog({ isOpen: true, listing });
+    };
+
+    const handleBuyConfirm = async () => {
+        const listing = confirmDialog.listing;
+        if (!listing || !walletPublicKey || !signTransaction) return;
+
+        setConfirmDialog({ isOpen: false, listing: null });
+        setStatusModal({
+            isOpen: true,
+            status: 'loading',
+            title: 'Processing Purchase',
+            message: `Buying ${listing.name} for ${listing.price} SOL...`,
+        });
 
         try {
-            if (!window.confirm(`Buy ${listing.name} for ${listing.price} SOL?`)) {
-                return;
-            }
-
             console.log('Buying NFT:', listing.asset, 'for', listing.price, 'SOL');
 
             // Call /buy endpoint for atomic swap
@@ -153,11 +185,21 @@ export const MarketplaceList = () => {
             await connection.confirmTransaction(signature, 'confirmed');
 
             console.log('Buy successful, signature:', signature);
-            alert(`NFT Bought Successfully for ${listing.price} SOL! Check your wallet.`);
+            setStatusModal({
+                isOpen: true,
+                status: 'success',
+                title: 'Purchase Successful!',
+                message: `You successfully bought ${listing.name} for ${listing.price} SOL. Check your wallet.`,
+            });
             loadListings(); // Refresh listings
         } catch (error) {
             console.error('Error buying NFT:', error);
-            alert(`Failed to buy NFT: ${error}`);
+            setStatusModal({
+                isOpen: true,
+                status: 'error',
+                title: 'Purchase Failed',
+                message: `Failed to buy NFT: ${error instanceof Error ? error.message : String(error)}`,
+            });
         }
     };
 
@@ -182,10 +224,27 @@ export const MarketplaceList = () => {
             ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                     {listings.map((listing) => (
-                        <ListingCard key={listing.escrow} listing={listing} onBuy={handleBuy} />
+                        <ListingCard key={listing.escrow} listing={listing} onBuy={initiateBuy} />
                     ))}
                 </div>
             )}
+
+            <ConfirmDialog
+                isOpen={confirmDialog.isOpen}
+                onClose={() => setConfirmDialog({ isOpen: false, listing: null })}
+                onConfirm={handleBuyConfirm}
+                title="Confirm Purchase"
+                description={`Are you sure you want to buy "${confirmDialog.listing?.name}" for ${confirmDialog.listing?.price} SOL? This action cannot be undone.`}
+                confirmText="Buy Now"
+            />
+
+            <StatusModal
+                isOpen={statusModal.isOpen}
+                onClose={() => setStatusModal(prev => ({ ...prev, isOpen: false }))}
+                status={statusModal.status}
+                title={statusModal.title}
+                message={statusModal.message}
+            />
         </div>
     );
 };

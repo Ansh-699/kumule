@@ -10,7 +10,6 @@ import { fetchAssetV1, getAssetV1GpaBuilder } from '@metaplex-foundation/mpl-cor
 const ESCROW_PROGRAM_ID = new PublicKey('4WYfhmmEu1MoSMDQfiN2JEbQV28gSo6vhm9idEL7ArtG')
 const ESCROW_SEED = Buffer.from('escrow')
 
-// Helper to derive escrow PDA
 function getEscrowPDA(asset: PublicKey, seller: PublicKey): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
         [ESCROW_SEED, asset.toBuffer(), seller.toBuffer()],
@@ -28,7 +27,6 @@ interface EscrowAccount {
     status: number // 0=Pending, 1=Deposited, 2=Completed, 3=Cancelled
 }
 
-// Parse escrow account data
 function parseEscrowAccount(data: Buffer): EscrowAccount {
     // Skip 8-byte discriminator
     let offset = 8
@@ -60,7 +58,6 @@ function parseEscrowAccount(data: Buffer): EscrowAccount {
     return { asset, seller, buyer, price, bump, status }
 }
 
-// IDL type (simplified - in production, import from generated types)
 const IDL = {
     address: ESCROW_PROGRAM_ID.toBase58(),
     metadata: {
@@ -120,6 +117,15 @@ const IDL = {
             ],
             args: [],
         },
+        {
+            name: 'close_escrow',
+            discriminator: [139, 171, 94, 146, 191, 91, 144, 50],
+            accounts: [
+                { name: 'seller', writable: true, signer: true },
+                { name: 'escrow', writable: true, pda: { seeds: [{ kind: 'const', value: [101, 115, 99, 114, 111, 119] }, { kind: 'account', path: 'asset' }, { kind: 'account', path: 'seller' }] } },
+            ],
+            args: [],
+        },
     ],
 }
 
@@ -127,7 +133,6 @@ export const getListings = async (c: Context<{ Bindings: CloudflareBindings }>) 
     try {
         const connection = new Connection(c.env.SOLANA_RPC_URL)
 
-        // Get all escrow accounts
         // We cannot use memcmp for status because the offset varies depending on whether buyer is present
         let accounts: any[] = []
         try {
@@ -144,12 +149,10 @@ export const getListings = async (c: Context<{ Bindings: CloudflareBindings }>) 
             try {
                 const escrowData = parseEscrowAccount(account.data)
 
-                // Filter for Deposited status (status = 1)
                 if (escrowData.status !== 1) {
                     continue
                 }
 
-                // Fetch NFT metadata
                 const asset = await fetchAssetV1(umi, umiPublicKey(escrowData.asset.toBase58()))
 
                 listings.push({
@@ -193,8 +196,55 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         }
 
         const [escrowPDA] = getEscrowPDA(assetPubkey, sellerPubkey)
+        const connection = new Connection(c.env.SOLANA_RPC_URL)
 
-        // Build create_escrow instruction
+        const tx = new Transaction()
+
+        const escrowAccountInfo = await connection.getAccountInfo(escrowPDA)
+
+        if (escrowAccountInfo) {
+            console.log('Escrow account exists, checking status...')
+            try {
+                const escrowData = parseEscrowAccount(escrowAccountInfo.data)
+                console.log('Existing escrow status:', escrowData.status)
+
+                // Status: 0=Pending, 1=Deposited, 2=Completed, 3=Cancelled
+                if (escrowData.status === 1) {
+                    return c.text('NFT is already listed', 400)
+                }
+
+                // If Completed (2), Cancelled (3), or Pending (0), close it first to reset state
+                if (escrowData.status === 0 || escrowData.status === 2 || escrowData.status === 3) {
+                    console.log('Closing existing escrow account to reset state...')
+                    const closeEscrowIx = new TransactionInstruction({
+                        programId: ESCROW_PROGRAM_ID,
+                        keys: [
+                            { pubkey: sellerPubkey, isSigner: true, isWritable: true },
+                            { pubkey: escrowPDA, isSigner: false, isWritable: true },
+                        ],
+                        data: Buffer.from(IDL.instructions[4].discriminator), // close_escrow is index 4
+                    })
+                    tx.add(closeEscrowIx)
+                }
+            } catch (e) {
+                console.error('Error parsing existing escrow account:', e)
+                // If we can't parse it, it might be garbage or old version. 
+                // Best to try to close it if owned by our program?
+                if (escrowAccountInfo.owner.equals(ESCROW_PROGRAM_ID)) {
+                    console.log('Account owned by program but parse failed, attempting to close...')
+                    const closeEscrowIx = new TransactionInstruction({
+                        programId: ESCROW_PROGRAM_ID,
+                        keys: [
+                            { pubkey: sellerPubkey, isSigner: true, isWritable: true },
+                            { pubkey: escrowPDA, isSigner: false, isWritable: true },
+                        ],
+                        data: Buffer.from(IDL.instructions[4].discriminator),
+                    })
+                    tx.add(closeEscrowIx)
+                }
+            }
+        }
+
         const createEscrowIx = new TransactionInstruction({
             programId: ESCROW_PROGRAM_ID,
             keys: [
@@ -232,7 +282,6 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             })
         }
 
-        // Add mpl-core plugin accounts if needed
         if (asset.pluginHeader) {
             depositAssetKeys.push({
                 pubkey: new PublicKey(asset.pluginHeader.key),
@@ -247,10 +296,8 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             data: Buffer.from(IDL.instructions[1].discriminator),
         })
 
-        const connection = new Connection(c.env.SOLANA_RPC_URL)
         const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
 
-        const tx = new Transaction()
         tx.recentBlockhash = blockhash
         tx.lastValidBlockHeight = lastValidBlockHeight
         tx.feePayer = sellerPubkey
@@ -281,7 +328,6 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
 
         const [escrowPDA] = getEscrowPDA(assetPubkey, sellerPubkey)
 
-        // Fetch asset for plugin accounts
         const umi = getUmi(c.env.SOLANA_RPC_URL)
         const asset = await fetchAssetV1(umi, umiPublicKey(assetId))
 
@@ -294,7 +340,6 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             { pubkey: new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'), isSigner: false, isWritable: false },
         ]
 
-        // Add collection account if asset belongs to a collection
         if (asset.updateAuthority.type === 'Collection' && asset.updateAuthority.address) {
             buyAssetKeys.push({
                 pubkey: new PublicKey(asset.updateAuthority.address.toString()),
@@ -303,7 +348,6 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             })
         }
 
-        // Add mpl-core plugin accounts if needed
         if (asset.pluginHeader) {
             buyAssetKeys.push({
                 pubkey: new PublicKey(asset.pluginHeader.key),
@@ -351,7 +395,6 @@ export const cancelListing = async (c: Context<{ Bindings: CloudflareBindings }>
 
         const [escrowPDA] = getEscrowPDA(assetPubkey, sellerPubkey)
 
-        // Fetch asset for plugin accounts
         const umi = getUmi(c.env.SOLANA_RPC_URL)
         const asset = await fetchAssetV1(umi, umiPublicKey(assetId))
 
@@ -363,7 +406,6 @@ export const cancelListing = async (c: Context<{ Bindings: CloudflareBindings }>
             { pubkey: new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'), isSigner: false, isWritable: false },
         ]
 
-        // Add collection account if asset belongs to a collection
         if (asset.updateAuthority.type === 'Collection' && asset.updateAuthority.address) {
             cancelEscrowKeys.push({
                 pubkey: new PublicKey(asset.updateAuthority.address.toString()),
@@ -372,7 +414,6 @@ export const cancelListing = async (c: Context<{ Bindings: CloudflareBindings }>
             })
         }
 
-        // Add mpl-core plugin accounts if needed
         if (asset.pluginHeader) {
             cancelEscrowKeys.push({
                 pubkey: new PublicKey(asset.pluginHeader.key),

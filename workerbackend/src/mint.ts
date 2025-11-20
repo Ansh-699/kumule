@@ -26,8 +26,6 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             signAllTransactions: async (txs: any[]) => txs,
         }
 
-        // Create the transaction builder
-        // We set the owner as the updateAuthority and owner of the asset.
         const builder = createV1(umi, {
             asset,
             name,
@@ -37,8 +35,6 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             payer: userSigner,     // User is the payer
         })
 
-        // Build the transaction
-        // We set the fee payer to the user and fetch the latest blockhash.
         const builderWithBlockhash = await builder
             .setFeePayer(userSigner)
             .setLatestBlockhash(umi)
@@ -50,7 +46,6 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         // then the frontend will sign with the user's wallet
         const signedTx = await asset.signTransaction(tx)
 
-        // Serialize the partially-signed transaction
         const serializedTx = umi.transactions.serialize(signedTx)
         const base64Tx = Buffer.from(serializedTx).toString('base64')
 

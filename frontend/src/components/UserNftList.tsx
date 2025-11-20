@@ -5,6 +5,7 @@ import { NftCard } from './NftCard';
 import { ListNftModal } from './ListNftModal';
 import { VersionedTransaction } from '@solana/web3.js';
 import { Buffer } from 'buffer';
+import { StatusModal, type StatusType } from './StatusModal';
 
 export const UserNftList = () => {
     const { publicKey: walletPublicKey, signTransaction } = useWallet();
@@ -12,9 +13,15 @@ export const UserNftList = () => {
     const [nfts, setNfts] = useState<NftAsset[]>([]);
     const [loading, setLoading] = useState(false);
 
-    // Modal State
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [selectedNft, setSelectedNft] = useState<NftAsset | null>(null);
+
+    const [statusModal, setStatusModal] = useState<{ isOpen: boolean; status: StatusType; title: string; message: string }>({
+        isOpen: false,
+        status: 'idle',
+        title: '',
+        message: '',
+    });
 
 
     useEffect(() => {
@@ -51,6 +58,14 @@ export const UserNftList = () => {
     const handleConfirmListing = async (price: number) => {
         if (!walletPublicKey || !signTransaction || !selectedNft) return;
 
+        closeListingModal();
+        setStatusModal({
+            isOpen: true,
+            status: 'loading',
+            title: 'Listing NFT',
+            message: `Listing ${selectedNft.name} for ${price} SOL...`,
+        });
+
         try {
             console.log('Listing NFT:', selectedNft.publicKey, 'for', price, 'SOL');
 
@@ -63,7 +78,7 @@ export const UserNftList = () => {
                 body: JSON.stringify({
                     assetId: selectedNft.publicKey,
                     seller: walletPublicKey.toString(),
-                    price: price, // Price in SOL
+                    price: price,
                 }),
             });
 
@@ -75,26 +90,31 @@ export const UserNftList = () => {
             const { transaction, escrow } = await response.json();
             console.log('Escrow PDA:', escrow);
 
-            // Deserialize the transaction
             const txBuffer = Buffer.from(transaction, 'base64');
             const tx = VersionedTransaction.deserialize(new Uint8Array(txBuffer));
 
-            // Sign the transaction
             const signedTx = await signTransaction(tx);
 
-            // Send the transaction
             const signature = await connection.sendRawTransaction(signedTx.serialize());
 
-            // Confirm the transaction
             await connection.confirmTransaction(signature, 'confirmed');
 
             console.log('NFT listed successfully! Signature:', signature);
-            alert(`NFT listed successfully for ${price} SOL!`);
-            closeListingModal();
-            loadNfts(); // Refresh list
+            setStatusModal({
+                isOpen: true,
+                status: 'success',
+                title: 'Listing Successful!',
+                message: `Successfully listed ${selectedNft.name} for ${price} SOL.`,
+            });
+            loadNfts();
         } catch (error) {
             console.error('Error listing NFT:', error);
-            alert(`Failed to list NFT: ${error}`);
+            setStatusModal({
+                isOpen: true,
+                status: 'error',
+                title: 'Listing Failed',
+                message: `Failed to list NFT: ${error instanceof Error ? error.message : String(error)}`,
+            });
         }
     };
 
@@ -139,6 +159,14 @@ export const UserNftList = () => {
                 isOpen={isModalOpen}
                 onClose={closeListingModal}
                 onConfirm={handleConfirmListing}
+            />
+
+            <StatusModal
+                isOpen={statusModal.isOpen}
+                onClose={() => setStatusModal(prev => ({ ...prev, isOpen: false }))}
+                status={statusModal.status}
+                title={statusModal.title}
+                message={statusModal.message}
             />
         </div>
     );

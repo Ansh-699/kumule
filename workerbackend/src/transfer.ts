@@ -13,8 +13,7 @@ export const transferNft = async (c: Context<{ Bindings: CloudflareBindings }>) 
             return c.text('Missing assetId, newOwner, or currentOwner', 400)
         }
 
-        // Validate Marketplace ID if needed (as per user request "currently it 1111..")
-        // We allow it, but we could enforce it here.
+
 
         const numericSalePrice = salePrice !== undefined ? Number(salePrice) : undefined
 
@@ -31,11 +30,8 @@ export const transferNft = async (c: Context<{ Bindings: CloudflareBindings }>) 
         // The user will sign this transaction on the frontend
         const currentOwnerSigner = createNoopSigner(currentOwnerKey)
 
-        // Set the identity to the current owner so Umi uses it as the default signer/payer
         umi.use(signerIdentity(currentOwnerSigner, true))
 
-        // Build the transfer transaction
-        // We explicitly set the authority to the current owner
         const builder = transferV1(umi, {
             asset,
             newOwner: newOwnerKey,
@@ -43,14 +39,12 @@ export const transferNft = async (c: Context<{ Bindings: CloudflareBindings }>) 
             collection: undefined, // Explicitly undefined for standalone assets
         })
 
-        // Set the fee payer to the current owner and get the latest blockhash
         const builderWithBlockhash = await builder
             .setFeePayer(currentOwnerSigner)
             .setLatestBlockhash(umi)
 
         const tx = await builderWithBlockhash.build(umi)
 
-        // Serialize the transaction
         const serializedTx = umi.transactions.serialize(tx)
         const base64Tx = Buffer.from(serializedTx).toString('base64')
 

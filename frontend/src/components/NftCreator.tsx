@@ -110,7 +110,6 @@ export const NftCreator = () => {
             setStatus('Sending transaction to Solana...');
             const signature = await connection.sendRawTransaction(signedTx.serialize());
 
-            // Confirm the transaction
             setStatus('Confirming transaction...');
             await connection.confirmTransaction(signature, 'confirmed');
 
@@ -119,7 +118,6 @@ export const NftCreator = () => {
             setCreatedNft(mint);
             setStatus('Success! NFT Minted.');
 
-            // Reset form
             setFormData({ name: '', symbol: '', description: '' });
             setImageFile(null);
 
