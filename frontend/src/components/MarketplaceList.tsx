@@ -191,7 +191,7 @@ export const MarketplaceList = () => {
                 title: 'Purchase Successful!',
                 message: `You successfully bought ${listing.name} for ${listing.price} SOL. Check your wallet.`,
             });
-            loadListings(); // Refresh listings
+            loadListings();
         } catch (error) {
             console.error('Error buying NFT:', error);
             setStatusModal({

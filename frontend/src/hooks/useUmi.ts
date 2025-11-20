@@ -9,7 +9,8 @@ export const useUmi = () => {
     const wallet = useWallet();
 
     const umi = useMemo(() => {
-        const u = createUmi('https://api.devnet.solana.com')
+        const rpcUrl = import.meta.env.VITE_SOLANA_RPC_URL || 'https://api.devnet.solana.com';
+        const u = createUmi(rpcUrl)
             .use(mplCore())
             .use(irysUploader());
 

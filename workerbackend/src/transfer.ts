@@ -26,8 +26,6 @@ export const transferNft = async (c: Context<{ Bindings: CloudflareBindings }>) 
         const newOwnerKey = publicKey(newOwner)
         const currentOwnerKey = publicKey(currentOwner)
 
-        // Create no-op signer for the current owner (user)
-        // The user will sign this transaction on the frontend
         const currentOwnerSigner = createNoopSigner(currentOwnerKey)
 
         umi.use(signerIdentity(currentOwnerSigner, true))
@@ -36,7 +34,7 @@ export const transferNft = async (c: Context<{ Bindings: CloudflareBindings }>) 
             asset,
             newOwner: newOwnerKey,
             authority: currentOwnerSigner,
-            collection: undefined, // Explicitly undefined for standalone assets
+            collection: undefined,
         })
 
         const builderWithBlockhash = await builder

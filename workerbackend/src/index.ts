@@ -1,7 +1,7 @@
 
 import { Hono } from 'hono'
 import { Buffer } from 'buffer'
-globalThis.Buffer = Buffer;
+globalThis.Buffer  = Buffer;
 import { searchNftByAsset } from './searchnftbyasset'
 import { searchNftByOwner } from './searchnftbyowner'
 import { transferNft } from './transfer'
@@ -12,7 +12,6 @@ const app = new Hono<{ Bindings: CloudflareBindings }>()
 
 app.use(cors())
 
-// Normalize any accidental double slashes before routing so /mint and //mint resolve the same.
 app.use('*', async (c, next) => {
   const url = new URL(c.req.url)
   const normalizedPath = url.pathname.replace(/\/{2,}/g, '/')
@@ -21,8 +20,6 @@ app.use('*', async (c, next) => {
   }
   await next()
 })
-
-app.get('/health', (c) => c.text('OK'))
 
 app.get('/', (c) => {
   const owner = c.req.query('owner')

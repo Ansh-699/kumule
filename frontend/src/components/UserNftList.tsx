@@ -69,7 +69,6 @@ export const UserNftList = () => {
         try {
             console.log('Listing NFT:', selectedNft.publicKey, 'for', price, 'SOL');
 
-            // Call backend to create escrow and deposit NFT
             const response = await fetch(`${API_BASE_URL}list`, {
                 method: 'POST',
                 headers: {

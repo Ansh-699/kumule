@@ -54,7 +54,6 @@ export const NftCreator = () => {
         setCreatedNft(null);
 
         try {
-            // 1. Upload Image to Irys
             setStatus('Uploading image to Irys (1/3)... Please sign the upload request.');
             const buffer = await imageFile.arrayBuffer();
             const file = createGenericFile(new Uint8Array(buffer), imageFile.name, { contentType: imageFile.type });
@@ -62,7 +61,6 @@ export const NftCreator = () => {
             const [imageUri] = await umi.uploader.upload([file]);
             console.log('Image uploaded:', imageUri);
 
-            // 2. Upload Metadata to Irys
             setStatus('Uploading metadata to Irys (2/3)... Please sign the upload request.');
             const metadata = {
                 name: formData.name,
@@ -73,7 +71,6 @@ export const NftCreator = () => {
             const metadataUri = await umi.uploader.uploadJson(metadata);
             console.log('Metadata uploaded:', metadataUri);
 
-            // 3. Call Backend to Build Transaction
             setStatus('Building mint transaction...');
             const response = await fetch(`${API_BASE_URL}/mint`, {
                 method: 'POST',
@@ -95,18 +92,13 @@ export const NftCreator = () => {
             const data = await response.json();
             const { transaction, mint } = data;
 
-            // 4. Sign and Send Transaction
             setStatus('Signing mint transaction (3/3)... Please approve the transaction.');
 
-            // Deserialize the partially-signed transaction from backend
-            // The backend has already signed with the asset signer
             const txBuffer = Buffer.from(transaction, 'base64');
             const tx = VersionedTransaction.deserialize(new Uint8Array(txBuffer));
 
-            // Sign with the user's wallet (this adds the user's signature)
             const signedTx = await signTransaction(tx);
 
-            // Send the fully-signed transaction
             setStatus('Sending transaction to Solana...');
             const signature = await connection.sendRawTransaction(signedTx.serialize());
 

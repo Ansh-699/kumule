@@ -12,7 +12,7 @@ nftmarketplace = "4WYfhmmEu1MoSMDQfiN2JEbQV28gSo6vhm9idEL7ArtG"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

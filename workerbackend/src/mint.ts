@@ -18,7 +18,6 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         const ownerKey = publicKey(owner)
         const asset = generateSigner(umi)
 
-        // Create a "NoopSigner" for the owner so Umi knows they are a signer/payer.
         const userSigner = {
             publicKey: ownerKey,
             signMessage: async (msg: Uint8Array) => msg,
@@ -31,8 +30,8 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             name,
             uri,
             owner: ownerKey,
-            authority: userSigner, // User is the authority
-            payer: userSigner,     // User is the payer
+            authority: userSigner, 
+            payer: userSigner,
         })
 
         const builderWithBlockhash = await builder
@@ -41,9 +40,6 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
 
         const tx = await builderWithBlockhash.build(umi)
 
-        // IMPORTANT: The asset signer needs to sign the transaction
-        // This is partial signing - the backend signs with the asset, 
-        // then the frontend will sign with the user's wallet
         const signedTx = await asset.signTransaction(tx)
 
         const serializedTx = umi.transactions.serialize(signedTx)

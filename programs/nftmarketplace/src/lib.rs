@@ -28,18 +28,39 @@ pub mod nftmarketplace {
         Ok(())
     }
 
-    pub fn deposit_asset<'info>(ctx: Context<'_, '_, '_, 'info, DepositAsset<'info>>) -> Result<()> {
-        require!(ctx.accounts.escrow.status == EscrowStatus::Pending, EscrowError::EscrowNotPending);
-        require_keys_eq!(ctx.accounts.escrow.seller, ctx.accounts.seller.key(), EscrowError::InvalidSeller);
-        require_keys_eq!(ctx.accounts.escrow.asset, ctx.accounts.asset.key(), EscrowError::AssetMismatch);
+    pub fn deposit_asset<'info>(
+        ctx: Context<'_, '_, '_, 'info, DepositAsset<'info>>,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.escrow.status == EscrowStatus::Pending,
+            EscrowError::EscrowNotPending
+        );
+        require_keys_eq!(
+            ctx.accounts.escrow.seller,
+            ctx.accounts.seller.key(),
+            EscrowError::InvalidSeller
+        );
+        require_keys_eq!(
+            ctx.accounts.escrow.asset,
+            ctx.accounts.asset.key(),
+            EscrowError::AssetMismatch
+        );
 
-        let ix = TransferV1Builder::new()
-            .asset(ctx.accounts.escrow.asset)
-            .payer(ctx.accounts.seller.key())
-            .new_owner(ctx.accounts.escrow.key())
-            .instruction();
+        let ix = if ctx.remaining_accounts.len() >= 2 {
+            TransferV1Builder::new()
+                .asset(ctx.accounts.escrow.asset)
+                .payer(ctx.accounts.seller.key())
+                .new_owner(ctx.accounts.escrow.key())
+                .collection(Some(ctx.remaining_accounts[1].key()))
+                .instruction()
+        } else {
+            TransferV1Builder::new()
+                .asset(ctx.accounts.escrow.asset)
+                .payer(ctx.accounts.seller.key())
+                .new_owner(ctx.accounts.escrow.key())
+                .instruction()
+        };
 
-        // Build account list for CPI - collect all accounts
         let account_infos: &[AccountInfo<'info>] = &[
             &[
                 ctx.accounts.asset.to_account_info(),
@@ -48,7 +69,8 @@ pub mod nftmarketplace {
                 ctx.accounts.system_program.to_account_info(),
             ],
             ctx.remaining_accounts,
-        ].concat();
+        ]
+        .concat();
 
         invoke(&ix, account_infos)?;
 
@@ -58,11 +80,21 @@ pub mod nftmarketplace {
     }
 
     pub fn buy_asset<'info>(ctx: Context<'_, '_, '_, 'info, BuyAsset<'info>>) -> Result<()> {
-        require!(ctx.accounts.escrow.status == EscrowStatus::Deposited, EscrowError::EscrowNotFunded);
-        require_keys_eq!(ctx.accounts.escrow.asset, ctx.accounts.asset.key(), EscrowError::AssetMismatch);
-        require_keys_eq!(ctx.accounts.escrow.seller, ctx.accounts.seller.key(), EscrowError::InvalidSeller);
+        require!(
+            ctx.accounts.escrow.status == EscrowStatus::Deposited,
+            EscrowError::EscrowNotFunded
+        );
+        require_keys_eq!(
+            ctx.accounts.escrow.asset,
+            ctx.accounts.asset.key(),
+            EscrowError::AssetMismatch
+        );
+        require_keys_eq!(
+            ctx.accounts.escrow.seller,
+            ctx.accounts.seller.key(),
+            EscrowError::InvalidSeller
+        );
 
-        // Transfer SOL from buyer to seller
         let transfer_sol_ix = anchor_lang::solana_program::system_instruction::transfer(
             &ctx.accounts.buyer.key(),
             &ctx.accounts.seller.key(),
@@ -79,7 +111,11 @@ pub mod nftmarketplace {
         )?;
 
         if let Some(expected_buyer) = ctx.accounts.escrow.buyer {
-            require_keys_eq!(expected_buyer, ctx.accounts.buyer.key(), EscrowError::BuyerMismatch);
+            require_keys_eq!(
+                expected_buyer,
+                ctx.accounts.buyer.key(),
+                EscrowError::BuyerMismatch
+            );
         } else {
             ctx.accounts.escrow.buyer = Some(ctx.accounts.buyer.key());
         }
@@ -88,13 +124,21 @@ pub mod nftmarketplace {
         let seller_key = ctx.accounts.escrow.seller;
         let bump = ctx.accounts.escrow.bump;
 
-        let ix = TransferV1Builder::new()
-            .asset(asset_key)
-            .payer(ctx.accounts.escrow.key())
-            .new_owner(ctx.accounts.buyer.key())
-            .instruction();
+        let ix = if ctx.remaining_accounts.len() >= 2 {
+            TransferV1Builder::new()
+                .asset(asset_key)
+                .payer(ctx.accounts.escrow.key())
+                .new_owner(ctx.accounts.buyer.key())
+                .collection(Some(ctx.remaining_accounts[1].key()))
+                .instruction()
+        } else {
+            TransferV1Builder::new()
+                .asset(asset_key)
+                .payer(ctx.accounts.escrow.key())
+                .new_owner(ctx.accounts.buyer.key())
+                .instruction()
+        };
 
-        // Build account list for CPI
         let account_infos: &[AccountInfo<'info>] = &[
             &[
                 ctx.accounts.asset.to_account_info(),
@@ -103,7 +147,8 @@ pub mod nftmarketplace {
                 ctx.accounts.system_program.to_account_info(),
             ],
             ctx.remaining_accounts,
-        ].concat();
+        ]
+        .concat();
 
         let bump_seed = [bump];
         let signer_seeds: &[&[u8]] = &[
@@ -120,22 +165,43 @@ pub mod nftmarketplace {
         Ok(())
     }
 
-    pub fn cancel_escrow<'info>(ctx: Context<'_, '_, '_, 'info, CancelEscrow<'info>>) -> Result<()> {
-        require!(ctx.accounts.escrow.status == EscrowStatus::Deposited, EscrowError::EscrowNotFunded);
-        require_keys_eq!(ctx.accounts.escrow.asset, ctx.accounts.asset.key(), EscrowError::AssetMismatch);
-        require_keys_eq!(ctx.accounts.escrow.seller, ctx.accounts.seller.key(), EscrowError::InvalidSeller);
+    pub fn cancel_escrow<'info>(
+        ctx: Context<'_, '_, '_, 'info, CancelEscrow<'info>>,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.escrow.status == EscrowStatus::Deposited,
+            EscrowError::EscrowNotFunded
+        );
+        require_keys_eq!(
+            ctx.accounts.escrow.asset,
+            ctx.accounts.asset.key(),
+            EscrowError::AssetMismatch
+        );
+        require_keys_eq!(
+            ctx.accounts.escrow.seller,
+            ctx.accounts.seller.key(),
+            EscrowError::InvalidSeller
+        );
 
         let asset_key = ctx.accounts.escrow.asset;
         let seller_key = ctx.accounts.escrow.seller;
         let bump = ctx.accounts.escrow.bump;
 
-        let ix = TransferV1Builder::new()
-            .asset(asset_key)
-            .payer(ctx.accounts.escrow.key())
-            .new_owner(ctx.accounts.seller.key())
-            .instruction();
+        let ix = if ctx.remaining_accounts.len() >= 2 {
+            TransferV1Builder::new()
+                .asset(asset_key)
+                .payer(ctx.accounts.escrow.key())
+                .new_owner(ctx.accounts.seller.key())
+                .collection(Some(ctx.remaining_accounts[1].key()))
+                .instruction()
+        } else {
+            TransferV1Builder::new()
+                .asset(asset_key)
+                .payer(ctx.accounts.escrow.key())
+                .new_owner(ctx.accounts.seller.key())
+                .instruction()
+        };
 
-        // Build account list for CPI
         let account_infos: &[AccountInfo<'info>] = &[
             &[
                 ctx.accounts.asset.to_account_info(),
@@ -144,7 +210,8 @@ pub mod nftmarketplace {
                 ctx.accounts.system_program.to_account_info(),
             ],
             ctx.remaining_accounts,
-        ].concat();
+        ]
+        .concat();
 
         let bump_seed = [bump];
         let signer_seeds: &[&[u8]] = &[
@@ -165,7 +232,10 @@ pub mod nftmarketplace {
     pub fn close_escrow(ctx: Context<CloseEscrow>) -> Result<()> {
         let escrow = &ctx.accounts.escrow;
         require!(
-            matches!(escrow.status, EscrowStatus::Completed | EscrowStatus::Cancelled),
+            matches!(
+                escrow.status,
+                EscrowStatus::Completed | EscrowStatus::Cancelled
+            ),
             EscrowError::EscrowStillActive
         );
         Ok(())
@@ -176,7 +246,6 @@ pub mod nftmarketplace {
 pub struct CreateEscrow<'info> {
     #[account(mut)]
     pub seller: Signer<'info>,
-    /// CHECK: Asset is validated by CPI
     pub asset: UncheckedAccount<'info>,
     #[account(
         init,
@@ -193,7 +262,6 @@ pub struct CreateEscrow<'info> {
 pub struct DepositAsset<'info> {
     #[account(mut)]
     pub seller: Signer<'info>,
-    /// CHECK: Asset is validated by mpl-core CPI
     #[account(mut)]
     pub asset: UncheckedAccount<'info>,
     #[account(
@@ -210,10 +278,8 @@ pub struct DepositAsset<'info> {
 pub struct BuyAsset<'info> {
     #[account(mut)]
     pub buyer: Signer<'info>,
-    /// CHECK: Asset is validated by mpl-core CPI
     #[account(mut)]
     pub asset: UncheckedAccount<'info>,
-    /// CHECK: Only used for key comparison and receiving SOL
     #[account(mut)]
     pub seller: UncheckedAccount<'info>,
     #[account(
@@ -230,7 +296,6 @@ pub struct BuyAsset<'info> {
 pub struct CancelEscrow<'info> {
     #[account(mut)]
     pub seller: Signer<'info>,
-    /// CHECK: Asset is validated by mpl-core CPI
     #[account(mut)]
     pub asset: UncheckedAccount<'info>,
     #[account(
@@ -286,8 +351,6 @@ impl Default for EscrowStatus {
         EscrowStatus::Pending
     }
 }
-
-
 
 #[error_code]
 pub enum EscrowError {

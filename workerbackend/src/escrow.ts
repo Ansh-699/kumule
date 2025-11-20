@@ -6,7 +6,7 @@ import { createNoopSigner, publicKey as umiPublicKey, signerIdentity } from '@me
 import { getUmi } from './umi'
 import { fetchAssetV1, getAssetV1GpaBuilder } from '@metaplex-foundation/mpl-core'
 
-// Program ID from lib.rs
+
 const ESCROW_PROGRAM_ID = new PublicKey('4WYfhmmEu1MoSMDQfiN2JEbQV28gSo6vhm9idEL7ArtG')
 const ESCROW_SEED = Buffer.from('escrow')
 
@@ -17,7 +17,7 @@ function getEscrowPDA(asset: PublicKey, seller: PublicKey): [PublicKey, number] 
     )
 }
 
-// Escrow account structure (must match Rust struct)
+
 interface EscrowAccount {
     asset: PublicKey
     seller: PublicKey
@@ -28,7 +28,7 @@ interface EscrowAccount {
 }
 
 function parseEscrowAccount(data: Buffer): EscrowAccount {
-    // Skip 8-byte discriminator
+
     let offset = 8
 
     const asset = new PublicKey(data.slice(offset, offset + 32))
@@ -37,7 +37,7 @@ function parseEscrowAccount(data: Buffer): EscrowAccount {
     const seller = new PublicKey(data.slice(offset, offset + 32))
     offset += 32
 
-    // Option<Pubkey> - 1 byte for Some/None + 32 bytes for pubkey if Some
+
     const hasBuyer = data[offset] === 1
     offset += 1
 
@@ -133,7 +133,7 @@ export const getListings = async (c: Context<{ Bindings: CloudflareBindings }>) 
     try {
         const connection = new Connection(c.env.SOLANA_RPC_URL)
 
-        // We cannot use memcmp for status because the offset varies depending on whether buyer is present
+
         let accounts: any[] = []
         try {
             accounts = await connection.getProgramAccounts(ESCROW_PROGRAM_ID) as any[]
@@ -159,7 +159,7 @@ export const getListings = async (c: Context<{ Bindings: CloudflareBindings }>) 
                     escrow: pubkey.toBase58(),
                     asset: escrowData.asset.toBase58(),
                     seller: escrowData.seller.toBase58(),
-                    price: Number(escrowData.price) / 1e9, // Convert lamports to SOL
+                    price: Number(escrowData.price) / 1e9,
                     name: asset.name,
                     uri: asset.uri,
                 })
@@ -208,12 +208,12 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                 const escrowData = parseEscrowAccount(escrowAccountInfo.data)
                 console.log('Existing escrow status:', escrowData.status)
 
-                // Status: 0=Pending, 1=Deposited, 2=Completed, 3=Cancelled
+
                 if (escrowData.status === 1) {
                     return c.text('NFT is already listed', 400)
                 }
 
-                // If Completed (2), Cancelled (3), or Pending (0), close it first to reset state
+
                 if (escrowData.status === 0 || escrowData.status === 2 || escrowData.status === 3) {
                     console.log('Closing existing escrow account to reset state...')
                     const closeEscrowIx = new TransactionInstruction({
@@ -222,14 +222,13 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                             { pubkey: sellerPubkey, isSigner: true, isWritable: true },
                             { pubkey: escrowPDA, isSigner: false, isWritable: true },
                         ],
-                        data: Buffer.from(IDL.instructions[4].discriminator), // close_escrow is index 4
+                        data: Buffer.from(IDL.instructions[4].discriminator),
                     })
                     tx.add(closeEscrowIx)
                 }
             } catch (e) {
                 console.error('Error parsing existing escrow account:', e)
-                // If we can't parse it, it might be garbage or old version. 
-                // Best to try to close it if owned by our program?
+
                 if (escrowAccountInfo.owner.equals(ESCROW_PROGRAM_ID)) {
                     console.log('Account owned by program but parse failed, attempting to close...')
                     const closeEscrowIx = new TransactionInstruction({
@@ -255,12 +254,12 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             ],
             data: Buffer.from([
                 ...IDL.instructions[0].discriminator,
-                ...new BN(priceNum * 1e9).toArray('le', 8), // Convert SOL to lamports
-                0, // buyer = None
+                ...new BN(priceNum * 1e9).toArray('le', 8),
+                0,
             ]),
         })
 
-        // Build deposit_asset instruction (requires mpl-core plugin accounts)
+
         const umi = getUmi(c.env.SOLANA_RPC_URL)
         const asset = await fetchAssetV1(umi, umiPublicKey(assetId))
 
@@ -272,8 +271,7 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             { pubkey: new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'), isSigner: false, isWritable: false },
         ]
 
-        // Add collection account if asset belongs to a collection
-        // Must come AFTER mpl_core_program but BEFORE plugin accounts
+
         if (asset.updateAuthority.type === 'Collection' && asset.updateAuthority.address) {
             depositAssetKeys.push({
                 pubkey: new PublicKey(asset.updateAuthority.address.toString()),

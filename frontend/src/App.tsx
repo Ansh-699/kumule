@@ -13,7 +13,7 @@ function App() {
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col items-center">
       <div className="w-full bg-yellow-500/10 border-b border-yellow-500/20 text-yellow-600 dark:text-yellow-500 px-4 py-2 text-center text-sm font-medium">
-        ⚠️ Make sure you are on Devnet wallet with some airdropped SOL
+        ⚠️ Make sure you are on Testnet wallet with some airdropped SOL
       </div>
 
       <div className="w-full py-10 flex flex-col items-center">

@@ -6,9 +6,10 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
-  "vars": {
-    "SOLANA_RPC_URL": "https://devnet.helius-rpc.com/?api-key=0d4faf3d-ecf9-4bfe-8073-f1bf28cad777"
-  },
+  // Environment variables are loaded from:
+  // - .dev.vars file for local development (git-ignored)
+  // - Cloudflare dashboard secrets for production
+  // No vars defined here to avoid committing secrets
   // "kv_namespaces": [
   //   {
   //     "binding": "MY_KV_NAMESPACE",
