@@ -5,25 +5,18 @@ import { NftCard } from './NftCard';
 import { ListNftModal } from './ListNftModal';
 import { VersionedTransaction } from '@solana/web3.js';
 import { Buffer } from 'buffer';
-import { StatusModal, type StatusType } from './StatusModal';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useToast } from '@/components/ui/use-toast';
 
 export const UserNftList = () => {
     const { publicKey: walletPublicKey, signTransaction } = useWallet();
     const { connection } = useConnection();
+    const { toast } = useToast();
     const [nfts, setNfts] = useState<NftAsset[]>([]);
     const [loading, setLoading] = useState(false);
 
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [selectedNft, setSelectedNft] = useState<NftAsset | null>(null);
-
-    const [statusModal, setStatusModal] = useState<{ isOpen: boolean; status: StatusType; title: string; message: string }>({
-        isOpen: false,
-        status: 'idle',
-        title: '',
-        message: '',
-    });
-
 
     useEffect(() => {
         if (walletPublicKey) {
@@ -41,6 +34,11 @@ export const UserNftList = () => {
             setNfts(data);
         } catch (error) {
             console.error('Error fetching user NFTs:', error);
+            toast({
+                variant: "destructive",
+                title: "Error",
+                description: "Failed to fetch your NFTs",
+            });
         } finally {
             setLoading(false);
         }
@@ -60,11 +58,10 @@ export const UserNftList = () => {
         if (!walletPublicKey || !signTransaction || !selectedNft) return;
 
         closeListingModal();
-        setStatusModal({
-            isOpen: true,
-            status: 'loading',
-            title: 'Listing NFT',
-            message: `Listing ${selectedNft.name} for ${price} SOL...`,
+
+        const loadingToast = toast({
+            title: "Listing NFT",
+            description: `Listing ${selectedNft.name} for ${price} SOL...`,
         });
 
         try {
@@ -100,20 +97,21 @@ export const UserNftList = () => {
             await connection.confirmTransaction(signature, 'confirmed');
 
             console.log('NFT listed successfully! Signature:', signature);
-            setStatusModal({
-                isOpen: true,
-                status: 'success',
-                title: 'Listing Successful!',
-                message: `Successfully listed ${selectedNft.name} for ${price} SOL.`,
+
+            loadingToast.dismiss();
+            toast({
+                title: "Listing Successful!",
+                description: `Successfully listed ${selectedNft.name} for ${price} SOL.`,
             });
+
             loadNfts();
         } catch (error) {
             console.error('Error listing NFT:', error);
-            setStatusModal({
-                isOpen: true,
-                status: 'error',
-                title: 'Listing Failed',
-                message: `Failed to list NFT: ${error instanceof Error ? error.message : String(error)}`,
+            loadingToast.dismiss();
+            toast({
+                variant: "destructive",
+                title: "Listing Failed",
+                description: `Failed to list NFT: ${error instanceof Error ? error.message : String(error)}`,
             });
         }
     };
@@ -165,7 +163,7 @@ export const UserNftList = () => {
             {nfts.length === 0 ? (
                 <p className="text-muted-foreground">You don't have any NFTs.</p>
             ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mb-8">
                     {nfts.map((nft) => (
                         <div key={nft.publicKey} className="h-full">
                             <NftCard nft={nft} onList={openListingModal} />
@@ -179,14 +177,6 @@ export const UserNftList = () => {
                 isOpen={isModalOpen}
                 onClose={closeListingModal}
                 onConfirm={handleConfirmListing}
-            />
-
-            <StatusModal
-                isOpen={statusModal.isOpen}
-                onClose={() => setStatusModal(prev => ({ ...prev, isOpen: false }))}
-                status={statusModal.status}
-                title={statusModal.title}
-                message={statusModal.message}
             />
         </div>
     );

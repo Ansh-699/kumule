@@ -4,8 +4,9 @@ import { API_BASE_URL } from '@/services/api';
 import { VersionedTransaction } from '@solana/web3.js';
 import { Buffer } from 'buffer';
 import { ConfirmDialog } from './ConfirmDialog';
-import { StatusModal, type StatusType } from './StatusModal';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useNavigate } from 'react-router-dom';
+import { useToast } from '@/components/ui/use-toast';
 
 interface Listing {
     escrow: string;
@@ -20,6 +21,7 @@ const ListingCard = ({ listing, onBuy }: { listing: Listing, onBuy: (listing: Li
     const [metadata, setMetadata] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const { publicKey } = useWallet();
+    const navigate = useNavigate();
 
     useEffect(() => {
         const fetchMetadata = async () => {
@@ -28,7 +30,6 @@ const ListingCard = ({ listing, onBuy }: { listing: Listing, onBuy: (listing: Li
                 return;
             }
             try {
-                console.log(`Fetching metadata for ${listing.name}:`, listing.uri);
                 const response = await fetch(listing.uri);
                 const data = await response.json();
                 setMetadata(data);
@@ -44,8 +45,11 @@ const ListingCard = ({ listing, onBuy }: { listing: Listing, onBuy: (listing: Li
     const isOwner = publicKey && listing.seller === publicKey.toString();
 
     return (
-        <div className="border rounded-lg p-4 space-y-3 flex flex-col h-full">
-            <div className="aspect-square bg-muted rounded-md flex items-center justify-center overflow-hidden relative">
+        <div className="border rounded-lg p-4 space-y-3 flex flex-col h-full transition-all hover:shadow-md">
+            <div
+                className="aspect-square bg-muted rounded-md flex items-center justify-center overflow-hidden relative cursor-pointer"
+                onClick={() => navigate(`/nft/${listing.asset}`)}
+            >
                 {loading ? (
                     <Skeleton className="w-full h-full" />
                 ) : metadata?.animation_url ? (
@@ -58,7 +62,7 @@ const ListingCard = ({ listing, onBuy }: { listing: Listing, onBuy: (listing: Li
                                     className="w-full h-32 object-cover rounded-lg mb-3 shadow-lg"
                                 />
                             )}
-                            <audio controls src={metadata.animation_url} className="w-full" />
+                            <audio controls src={metadata.animation_url} className="w-full" onClick={(e) => e.stopPropagation()} />
                         </div>
                     ) : (
                         <video
@@ -85,8 +89,8 @@ const ListingCard = ({ listing, onBuy }: { listing: Listing, onBuy: (listing: Li
                     <div className="text-muted-foreground text-sm">No Image</div>
                 )}
             </div>
-            <div className="flex-grow">
-                <h3 className="font-semibold truncate" title={listing.name}>{listing.name}</h3>
+            <div className="flex-grow cursor-pointer" onClick={() => navigate(`/nft/${listing.asset}`)}>
+                <h3 className="font-semibold truncate hover:text-primary transition-colors" title={listing.name}>{listing.name}</h3>
                 <p className="text-xs text-muted-foreground truncate" title={listing.asset}>
                     Asset: {listing.asset.slice(0, 4)}...{listing.asset.slice(-4)}
                 </p>
@@ -117,16 +121,11 @@ const ListingCard = ({ listing, onBuy }: { listing: Listing, onBuy: (listing: Li
 export const MarketplaceList = () => {
     const { publicKey: walletPublicKey, signTransaction } = useWallet();
     const { connection } = useConnection();
+    const { toast } = useToast();
     const [listings, setListings] = useState<Listing[]>([]);
     const [loading, setLoading] = useState(false);
 
     const [confirmDialog, setConfirmDialog] = useState<{ isOpen: boolean; listing: Listing | null }>({ isOpen: false, listing: null });
-    const [statusModal, setStatusModal] = useState<{ isOpen: boolean; status: StatusType; title: string; message: string }>({
-        isOpen: false,
-        status: 'idle',
-        title: '',
-        message: '',
-    });
 
     useEffect(() => {
         loadListings();
@@ -152,11 +151,10 @@ export const MarketplaceList = () => {
 
     const initiateBuy = (listing: Listing) => {
         if (!walletPublicKey || !signTransaction) {
-            setStatusModal({
-                isOpen: true,
-                status: 'error',
-                title: 'Wallet Not Connected',
-                message: 'Please connect your wallet to buy NFTs.',
+            toast({
+                variant: "destructive",
+                title: "Wallet Not Connected",
+                description: "Please connect your wallet to buy NFTs.",
             });
             return;
         }
@@ -168,11 +166,10 @@ export const MarketplaceList = () => {
         if (!listing || !walletPublicKey || !signTransaction) return;
 
         setConfirmDialog({ isOpen: false, listing: null });
-        setStatusModal({
-            isOpen: true,
-            status: 'loading',
-            title: 'Processing Purchase',
-            message: `Buying ${listing.name} for ${listing.price} SOL...`,
+
+        const loadingToast = toast({
+            title: "Processing Purchase",
+            description: `Buying ${listing.name} for ${listing.price} SOL...`,
         });
 
         try {
@@ -208,20 +205,21 @@ export const MarketplaceList = () => {
             await connection.confirmTransaction(signature, 'confirmed');
 
             console.log('Buy successful, signature:', signature);
-            setStatusModal({
-                isOpen: true,
-                status: 'success',
-                title: 'Purchase Successful!',
-                message: `You successfully bought ${listing.name} for ${listing.price} SOL. Check your wallet.`,
+
+            loadingToast.dismiss();
+            toast({
+                title: "Purchase Successful!",
+                description: `You successfully bought ${listing.name} for ${listing.price} SOL.`,
             });
+
             loadListings();
         } catch (error) {
             console.error('Error buying NFT:', error);
-            setStatusModal({
-                isOpen: true,
-                status: 'error',
-                title: 'Purchase Failed',
-                message: `Failed to buy NFT: ${error instanceof Error ? error.message : String(error)}`,
+            loadingToast.dismiss();
+            toast({
+                variant: "destructive",
+                title: "Purchase Failed",
+                description: `Failed to buy NFT: ${error instanceof Error ? error.message : String(error)}`,
             });
         }
     };
@@ -269,7 +267,7 @@ export const MarketplaceList = () => {
             {listings.length === 0 ? (
                 <p className="text-muted-foreground">No NFTs listed in the marketplace.</p>
             ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mb-8">
                     {listings.map((listing) => (
                         <ListingCard key={listing.escrow} listing={listing} onBuy={initiateBuy} />
                     ))}
@@ -283,14 +281,6 @@ export const MarketplaceList = () => {
                 title="Confirm Purchase"
                 description={`Are you sure you want to buy "${confirmDialog.listing?.name}" for ${confirmDialog.listing?.price} SOL? This action cannot be undone.`}
                 confirmText="Buy Now"
-            />
-
-            <StatusModal
-                isOpen={statusModal.isOpen}
-                onClose={() => setStatusModal(prev => ({ ...prev, isOpen: false }))}
-                status={statusModal.status}
-                title={statusModal.title}
-                message={statusModal.message}
             />
         </div>
     );
