@@ -47,6 +47,26 @@ const ListingCard = ({ listing, onBuy }: { listing: Listing, onBuy: (listing: Li
             <div className="aspect-square bg-muted rounded-md flex items-center justify-center overflow-hidden relative">
                 {loading ? (
                     <div className="text-muted-foreground text-sm">Loading...</div>
+                ) : metadata?.animation_url ? (
+                    metadata.properties?.category === 'audio' ? (
+                        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-purple-500/10 to-pink-500/10 p-4">
+                            {metadata.image && (
+                                <img
+                                    src={metadata.image}
+                                    alt="Cover"
+                                    className="w-full h-32 object-cover rounded-lg mb-3 shadow-lg"
+                                />
+                            )}
+                            <audio controls src={metadata.animation_url} className="w-full" />
+                        </div>
+                    ) : (
+                        <video
+                            src={metadata.animation_url}
+                            controls
+                            className="w-full h-full object-cover"
+                            poster={metadata.image}
+                        />
+                    )
                 ) : metadata?.image ? (
                     <img
                         src={metadata.image}

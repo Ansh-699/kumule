@@ -17,11 +17,19 @@ export interface NftMetadata {
     name: string;
     description: string;
     image: string;
+    animation_url?: string;
     attributes?: {
         trait_type: string;
         value: string;
     }[];
-    properties?: any;
+    properties?: {
+        files?: {
+            uri: string;
+            type: string;
+        }[];
+        category?: string;
+        [key: string]: any;
+    };
 }
 
 export const fetchNftByAsset = async (assetAddress: string): Promise<NftAsset> => {

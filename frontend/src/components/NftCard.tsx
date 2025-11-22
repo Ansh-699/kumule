@@ -39,11 +39,31 @@ export const NftCard: React.FC<NftCardProps> = ({ nft, onList }) => {
 
     return (
         <Card className="w-full overflow-hidden hover:shadow-lg transition-shadow flex flex-col h-full">
-            <div className="h-48 w-full relative overflow-hidden bg-muted">
+            <div className="h-48 w-full relative overflow-hidden bg-muted group">
                 {loading ? (
                     <div className="w-full h-full flex items-center justify-center text-muted-foreground">
                         Loading...
                     </div>
+                ) : metadata?.animation_url ? (
+                    metadata.properties?.category === 'audio' ? (
+                        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-purple-500/10 to-pink-500/10 p-4">
+                            {metadata.image && (
+                                <img
+                                    src={metadata.image}
+                                    alt="Cover"
+                                    className="w-full h-32 object-cover rounded-lg mb-3 shadow-lg"
+                                />
+                            )}
+                            <audio controls src={metadata.animation_url} className="w-full" />
+                        </div>
+                    ) : (
+                        <video
+                            src={metadata.animation_url}
+                            controls
+                            className="object-cover w-full h-full"
+                            poster={metadata.image}
+                        />
+                    )
                 ) : metadata?.image ? (
                     <img
                         src={metadata.image}

@@ -10,6 +10,9 @@
   // - .dev.vars file for local development (git-ignored)
   // - Cloudflare dashboard secrets for production
   // No vars defined here to avoid committing secrets
+  "vars": {
+    "SOLANA_RPC_URL": "https://api.devnet.solana.com"
+  },
   // "kv_namespaces": [
   //   {
   //     "binding": "MY_KV_NAMESPACE",
