@@ -5,6 +5,7 @@ import { VersionedTransaction } from '@solana/web3.js';
 import { Buffer } from 'buffer';
 import { ConfirmDialog } from './ConfirmDialog';
 import { StatusModal, type StatusType } from './StatusModal';
+import { Skeleton } from '@/components/ui/skeleton';
 
 interface Listing {
     escrow: string;
@@ -46,7 +47,7 @@ const ListingCard = ({ listing, onBuy }: { listing: Listing, onBuy: (listing: Li
         <div className="border rounded-lg p-4 space-y-3 flex flex-col h-full">
             <div className="aspect-square bg-muted rounded-md flex items-center justify-center overflow-hidden relative">
                 {loading ? (
-                    <div className="text-muted-foreground text-sm">Loading...</div>
+                    <Skeleton className="w-full h-full" />
                 ) : metadata?.animation_url ? (
                     metadata.properties?.category === 'audio' ? (
                         <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-purple-500/10 to-pink-500/10 p-4">
@@ -62,7 +63,9 @@ const ListingCard = ({ listing, onBuy }: { listing: Listing, onBuy: (listing: Li
                     ) : (
                         <video
                             src={metadata.animation_url}
-                            controls
+                            autoPlay
+                            loop
+                            muted
                             className="w-full h-full object-cover"
                             poster={metadata.image}
                         />
@@ -224,7 +227,31 @@ export const MarketplaceList = () => {
     };
 
     if (loading) {
-        return <div className="text-center p-10">Loading Marketplace...</div>;
+        return (
+            <div className="w-full">
+                <div className="flex items-center justify-between mb-4">
+                    <Skeleton className="h-8 w-48" />
+                    <Skeleton className="h-9 w-24" />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                    {[...Array(8)].map((_, i) => (
+                        <div key={i} className="border rounded-lg p-4 space-y-3">
+                            <Skeleton className="aspect-square w-full rounded-md" />
+                            <Skeleton className="h-6 w-3/4" />
+                            <Skeleton className="h-4 w-full" />
+                            <Skeleton className="h-4 w-2/3" />
+                            <div className="flex items-center justify-between mt-2">
+                                <div className="space-y-2">
+                                    <Skeleton className="h-3 w-12" />
+                                    <Skeleton className="h-5 w-20" />
+                                </div>
+                                <Skeleton className="h-10 w-20" />
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        );
     }
 
     return (

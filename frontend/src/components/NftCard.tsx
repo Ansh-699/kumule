@@ -6,6 +6,7 @@ import {
     CardHeader,
     CardTitle,
 } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
 import type { NftAsset, NftMetadata } from '@/services/api';
 
 interface NftCardProps {
@@ -41,9 +42,7 @@ export const NftCard: React.FC<NftCardProps> = ({ nft, onList }) => {
         <Card className="w-full overflow-hidden hover:shadow-lg transition-shadow flex flex-col h-full">
             <div className="h-48 w-full relative overflow-hidden bg-muted group">
                 {loading ? (
-                    <div className="w-full h-full flex items-center justify-center text-muted-foreground">
-                        Loading...
-                    </div>
+                    <Skeleton className="w-full h-full" />
                 ) : metadata?.animation_url ? (
                     metadata.properties?.category === 'audio' ? (
                         <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-purple-500/10 to-pink-500/10 p-4">
@@ -59,8 +58,10 @@ export const NftCard: React.FC<NftCardProps> = ({ nft, onList }) => {
                     ) : (
                         <video
                             src={metadata.animation_url}
-                            controls
-                            className="object-cover w-full h-full"
+                            autoPlay
+                            loop
+                            muted
+                            className="w-full h-full object-cover"
                             poster={metadata.image}
                         />
                     )
