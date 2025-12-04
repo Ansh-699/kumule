@@ -88,6 +88,16 @@ export const transferNft = async (c: Context<{ Bindings: CloudflareBindings }>) 
                                 nftId: nft?.id || null,
                                 transactionType: 'TRANSFER',
                                 status: 'PENDING',
+                                walletAddress: newOwner,
+                                currency: 'SOL',
+                                network: 'solana',
+                                metadata: JSON.stringify({
+                                    source: 'nft_transfer',
+                                    assetId: assetId,
+                                    from: currentOwner,
+                                    to: newOwner,
+                                    salePrice: numericSalePrice
+                                })
                             }
                         })
                         console.log('Transfer DB: Transaction recorded')

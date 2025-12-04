@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::{invoke, invoke_signed};
 use mpl_core::instructions::TransferV1Builder;
 
-declare_id!("4WYfhmmEu1MoSMDQfiN2JEbQV28gSo6vhm9idEL7ArtG");
+declare_id!("3ozh4TQJbeyXFUuXsj7fYmHB5aCVkg24cZN5zZmigR44");
 
 const ESCROW_SEED: &[u8] = b"escrow";
 
@@ -240,6 +240,100 @@ pub mod nftmarketplace {
         );
         Ok(())
     }
+
+    /// Admin resolve dispute: Can refund buyer or complete the sale
+    /// Only works on DISPUTED escrows
+    pub fn admin_resolve<'info>(
+        ctx: Context<'_, '_, '_, 'info, AdminResolve<'info>>,
+        refund_buyer: bool,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.escrow.status == EscrowStatus::Disputed,
+            EscrowError::EscrowNotDisputed
+        );
+
+        require_keys_eq!(
+            ctx.accounts.escrow.asset,
+            ctx.accounts.asset.key(),
+            EscrowError::AssetMismatch
+        );
+
+        // Extract values before mutable borrow
+        let asset_key = ctx.accounts.escrow.asset;
+        let seller_key = ctx.accounts.escrow.seller;
+        let buyer = ctx.accounts.escrow.buyer;
+        let price = ctx.accounts.escrow.price;
+        let bump = ctx.accounts.escrow.bump;
+        let escrow_key = ctx.accounts.escrow.key();
+
+        if refund_buyer {
+            // Refund: Transfer SOL back to buyer, NFT back to seller
+            let buyer_pubkey = buyer.ok_or(EscrowError::BuyerMismatch)?;
+            
+            // Transfer SOL from seller back to buyer (refund)
+            let refund_sol_ix = anchor_lang::solana_program::system_instruction::transfer(
+                &ctx.accounts.seller.key(),
+                &buyer_pubkey,
+                price,
+            );
+
+            invoke(
+                &refund_sol_ix,
+                &[
+                    ctx.accounts.seller.to_account_info(),
+                    ctx.accounts.buyer.to_account_info(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
+            )?;
+
+            // Transfer NFT back to seller
+            let ix = if ctx.remaining_accounts.len() >= 2 {
+                TransferV1Builder::new()
+                    .asset(asset_key)
+                    .payer(escrow_key)
+                    .new_owner(seller_key)
+                    .collection(Some(ctx.remaining_accounts[1].key()))
+                    .instruction()
+            } else {
+                TransferV1Builder::new()
+                    .asset(asset_key)
+                    .payer(escrow_key)
+                    .new_owner(seller_key)
+                    .instruction()
+            };
+
+            let account_infos: &[AccountInfo<'info>] = &[
+                &[
+                    ctx.accounts.asset.to_account_info(),
+                    ctx.accounts.escrow.to_account_info(),
+                    ctx.accounts.seller.to_account_info(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
+                ctx.remaining_accounts,
+            ]
+            .concat();
+
+            let bump_seed = [bump];
+            let signer_seeds: &[&[u8]] = &[
+                ESCROW_SEED,
+                asset_key.as_ref(),
+                seller_key.as_ref(),
+                &bump_seed,
+            ];
+
+            invoke_signed(&ix, account_infos, &[signer_seeds])?;
+
+            let escrow = &mut ctx.accounts.escrow;
+            escrow.status = EscrowStatus::Cancelled;
+            escrow.buyer = None;
+        } else {
+            // Complete the sale: NFT stays with buyer, no refund
+            let escrow = &mut ctx.accounts.escrow;
+            escrow.status = EscrowStatus::Completed;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -322,6 +416,29 @@ pub struct CloseEscrow<'info> {
     pub escrow: Account<'info, Escrow>,
 }
 
+#[derive(Accounts)]
+pub struct AdminResolve<'info> {
+    /// Admin authority (must be signer)
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    /// CHECK: Seller account verified via escrow PDA seeds
+    #[account(mut)]
+    pub seller: UncheckedAccount<'info>,
+    /// CHECK: Buyer account verified via escrow buyer field
+    #[account(mut)]
+    pub buyer: UncheckedAccount<'info>,
+    /// CHECK: Asset account verified in instruction logic
+    #[account(mut)]
+    pub asset: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        seeds = [ESCROW_SEED, escrow.asset.as_ref(), escrow.seller.as_ref()],
+        bump = escrow.bump
+    )]
+    pub escrow: Account<'info, Escrow>,
+    pub system_program: Program<'info, System>,
+}
+
 #[account]
 pub struct Escrow {
     pub asset: Pubkey,
@@ -344,6 +461,7 @@ pub enum EscrowStatus {
     Deposited = 1,
     Completed = 2,
     Cancelled = 3,
+    Disputed = 4,
 }
 
 impl Default for EscrowStatus {
@@ -370,4 +488,6 @@ pub enum EscrowError {
     MissingTransferAccount,
     #[msg("Escrow is still active")]
     EscrowStillActive,
+    #[msg("Escrow is not in disputed state")]
+    EscrowNotDisputed,
 }

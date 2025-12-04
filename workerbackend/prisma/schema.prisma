@@ -14,6 +14,10 @@ model User {
   escrows      Escrow[]
   transactions Transaction[]
   wallets      Wallet[]
+  disputes     Dispute[]
+  eventEntries EventEntry[]
+  rewardAccount RewardAccount?
+  createdEvents Event[]      @relation("EventCreator")
 
   @@map("users")
 }
@@ -104,4 +108,190 @@ model PaymentLog {
   @@index([walletAddress])
   @@index([eventType])
   @@map("payment_logs")
+}
+
+model Event {
+  id            String       @id @default(uuid())
+  creatorId     String       @map("creator_id")
+  creatorWallet String       @map("creator_wallet") // Creator's SOL wallet
+  name          String
+  description   String?
+  entryFee      Decimal      @map("entry_fee") // SOL amount (0 for free events)
+  eventDate     DateTime?    @map("event_date") // Scheduled event date
+  status        String       @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED
+  completedAt   DateTime?    @map("completed_at") // When event actually happened
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+  entries       EventEntry[]
+  disputes      Dispute[]
+  escrows       EventEscrow[]
+  creator       User         @relation("EventCreator", fields: [creatorId], references: [id])
+
+  @@index([creatorId])
+  @@index([status])
+  @@map("events")
+}
+
+model EventEntry {
+  id            String        @id @default(uuid())
+  userId        String        @map("user_id")
+  eventId       String        @map("event_id")
+  walletAddress String        @map("wallet_address")
+  amount        Decimal       // Amount paid to enter (entry fee)
+  txHash        String?       @map("tx_hash") // Transaction hash for entry payment
+  status        String        @default("ACTIVE") // ACTIVE | COMPLETED | DISPUTED | REFUNDED
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+  user          User          @relation(fields: [userId], references: [id])
+  event         Event         @relation(fields: [eventId], references: [id])
+  escrow        EventEscrow?
+
+  @@index([userId])
+  @@index([eventId])
+  @@index([walletAddress])
+  @@map("event_entries")
+}
+
+model EventEscrow {
+  id              String      @id @default(uuid())
+  eventId         String      @map("event_id")
+  eventEntryId    String?     @unique @map("event_entry_id")
+  eventIdOnChain  String      @map("event_id_on_chain") // On-chain event ID (stored as string)
+  participantId   String      @map("participant_id")
+  participantWallet String    @map("participant_wallet")
+  eventCreatorWallet String   @map("event_creator_wallet")
+  escrowPda       String      @map("escrow_pda") // PDA address on-chain
+  amount          Decimal     // SOL amount
+  status          String      // PENDING | FUNDED | CONFIRMED | RELEASED | DISPUTED | REFUNDED
+  depositTxHash   String?     @map("deposit_tx_hash") // SOL deposit transaction
+  releaseTxHash   String?     @map("release_tx_hash") // SOL release transaction
+  confirmedAt     DateTime?   @map("confirmed_at")
+  releasedAt      DateTime?   @map("released_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+  event           Event       @relation(fields: [eventId], references: [id])
+  eventEntry      EventEntry? @relation(fields: [eventEntryId], references: [id])
+
+  @@index([eventId])
+  @@index([participantWallet])
+  @@index([status])
+  @@index([escrowPda])
+  @@map("event_escrows")
+}
+
+model RewardAccount {
+  id                String        @id @default(uuid())
+  userId            String        @unique @map("user_id")
+  walletAddress     String        @map("wallet_address")
+  interactionCount  Int           @default(0) @map("interaction_count") // Total interaction points
+  claimedNfts       Int           @default(0) @map("claimed_nfts") // Number of NFTs claimed
+  rewardPda         String?       @map("reward_pda") // On-chain reward account PDA
+  lastInteractionAt DateTime?     @map("last_interaction_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+  user              User          @relation(fields: [userId], references: [id])
+  interactions      Interaction[]
+  claimedRewards    ClaimedReward[]
+
+  @@index([walletAddress])
+  @@index([userId])
+  @@map("reward_accounts")
+}
+
+model Interaction {
+  id                String        @id @default(uuid())
+  rewardAccountId   String        @map("reward_account_id")
+  interactionType   String        @map("interaction_type") // "CLICK", "VIEW", "SHARE", etc.
+  points            Int           @default(1) // Points earned
+  metadata          String?       // JSON string for additional data
+  createdAt         DateTime      @default(now()) @map("created_at")
+  rewardAccount     RewardAccount @relation(fields: [rewardAccountId], references: [id])
+
+  @@index([rewardAccountId])
+  @@index([createdAt])
+  @@map("interactions")
+}
+
+model RewardDraft {
+  id                String        @id @default(uuid())
+  name              String
+  description       String?
+  metadataUri       String?       @map("metadata_uri") // Uploaded metadata URI
+  imageUrl          String?       @map("image_url") // Uploaded image URI
+  imageFile         String?       @map("image_file") // Original file name
+  requiredPoints    Int           @default(100) @map("required_points")
+  rewardType        String        @default("MUSIC_NFT") @map("reward_type")
+  totalSupply       Int           @default(1) @map("total_supply")
+  isListed          Boolean       @default(false) @map("is_listed") // Whether it's listed as available reward
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  @@index([isListed])
+  @@map("reward_drafts")
+}
+
+model RewardNft {
+  id                String        @id @default(uuid())
+  name              String
+  description       String?
+  nftAsset          String        @unique @map("nft_asset") // On-chain NFT asset address
+  metadataUri       String        @map("metadata_uri")
+  imageUrl          String?       @map("image_url")
+  requiredPoints    Int           @map("required_points") // Points needed to claim
+  rewardType        String        @default("MUSIC_NFT") @map("reward_type") // "MUSIC_NFT", "BADGE", etc.
+  adminWallet       String        @map("admin_wallet") // Admin wallet that owns the NFT (vault)
+  isActive          Boolean       @default(true) @map("is_active")
+  totalSupply       Int           @default(1) @map("total_supply") // How many can be claimed
+  claimedCount      Int           @default(0) @map("claimed_count") // How many have been claimed
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+  claimedRewards    ClaimedReward[]
+
+  @@index([isActive])
+  @@index([requiredPoints])
+  @@map("reward_nfts")
+}
+
+model ClaimedReward {
+  id                String        @id @default(uuid())
+  rewardAccountId   String        @map("reward_account_id")
+  rewardNftId       String?       @map("reward_nft_id") // Reference to RewardNft
+  nftId             String?       @map("nft_id") // NFT that was claimed
+  nftAsset          String?       @map("nft_asset") // On-chain NFT asset address
+  pointsUsed        Int           @map("points_used") // Points used to claim
+  rewardType        String        @map("reward_type") // "MUSIC_NFT", "BADGE", etc.
+  txHash            String?       @map("tx_hash") // Transaction hash for claim
+  metadata          String?       // JSON string for additional data
+  createdAt         DateTime      @default(now()) @map("created_at")
+  rewardAccount     RewardAccount @relation(fields: [rewardAccountId], references: [id])
+  rewardNft         RewardNft?    @relation(fields: [rewardNftId], references: [id])
+
+  @@index([rewardAccountId])
+  @@index([nftAsset])
+  @@index([rewardNftId])
+  @@map("claimed_rewards")
+}
+
+model Dispute {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  eventId         String?  @map("event_id")
+  eventEntryId    String?  @map("event_entry_id")
+  walletAddress   String   @map("wallet_address") // User's SOL wallet
+  amount          Decimal  // Amount in dispute (from event entry fee)
+  reason          String   // User's dispute reason/description
+  transactionId   String?  @map("transaction_id") // Original entry transaction reference
+  status          String   @default("PENDING") // PENDING | APPROVED | REJECTED | REFUNDED
+  adminNotes      String?  @map("admin_notes") // Admin's resolution notes
+  refundTxHash    String?  @map("refund_tx_hash") // Refund transaction signature (when manually refunded)
+  createdAt       DateTime @default(now()) @map("created_at")
+  resolvedAt      DateTime? @map("resolved_at")
+  user            User     @relation(fields: [userId], references: [id])
+  event           Event?   @relation(fields: [eventId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([walletAddress])
+  @@index([eventId])
+  @@map("disputes")
 }

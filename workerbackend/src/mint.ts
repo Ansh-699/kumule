@@ -113,7 +113,7 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                         });
                         console.log('Mint DB: NFT record created successfully')
 
-                        // 3. Link Transaction if applicable (for Coinbase payments)
+                        // 3. Create or update Transaction record
                         if (paymentMethod === 'coinbase' && chargeId) {
                             // Get the NFT we just created
                             const nft = await prisma.nft.findUnique({ where: { nftId: assetKey } });
@@ -126,6 +126,26 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                                     }
                                 }).catch((e: unknown) => console.log('Transaction update failed (may not exist):', e));
                             }
+                        } else if (paymentMethod === 'wallet') {
+                            // Create transaction record for wallet payments
+                            const nft = await prisma.nft.findUnique({ where: { nftId: assetKey } });
+                            await prisma.transaction.create({
+                                data: {
+                                    transactionId: `mint_${assetKey}_${Date.now()}`,
+                                    userId: user.id,
+                                    amount: 0, // Wallet payments typically don't have a fee
+                                    nftId: nft?.id || null,
+                                    transactionType: 'MINT',
+                                    status: 'COMPLETED',
+                                    walletAddress: walletAddress,
+                                    currency: 'SOL',
+                                    network: 'solana',
+                                    metadata: JSON.stringify({
+                                        source: 'wallet_mint',
+                                        mintedAt: new Date().toISOString()
+                                    })
+                                }
+                            }).catch((e: unknown) => console.log('Transaction creation failed:', e));
                         }
                     } else {
                         console.warn('Mint DB: Wallet not found after user creation')

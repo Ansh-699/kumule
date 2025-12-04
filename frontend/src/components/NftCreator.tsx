@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { VersionedTransaction } from '@solana/web3.js';
 import { notifySolanaPayment } from '../services/api';
-import { API_BASE_URL, createPayment, getPaymentStatus } from '@/services/api';
+import { API_BASE_URL, createPayment, getPaymentStatus, checkPaymentStatus, cancelPayment } from '@/services/api';
 import { useUmi } from '@/hooks/useUmi';
 import { createGenericFile } from '@metaplex-foundation/umi';
 import { Buffer } from 'buffer';
@@ -102,36 +102,101 @@ export const NftCreator = () => {
                     
                     setStatus('Waiting for payment confirmation...');
 
-                    // Poll for payment status (check every 3 seconds for up to 5 minutes)
-                    const maxAttempts = 100;
+                    // Poll for payment status using check-status endpoint (updates database)
+                    // Check every 5 seconds for up to 10 minutes (120 attempts)
+                    const maxAttempts = 120;
+                    const pollInterval = 5000; // 5 seconds
                     let attempts = 0;
                     let paymentVerified = false;
+                    let lastStatus = 'PENDING';
+                    let windowClosedDetected = false;
+
+                    // Check for window closure before polling starts
+                    const checkWindowClosed = () => {
+                        if (popup && popup.closed && !windowClosedDetected) {
+                            windowClosedDetected = true;
+                            return true;
+                        }
+                        return false;
+                    };
 
                     while (attempts < maxAttempts && !paymentVerified) {
-                        if (popup && popup.closed) {
-                            throw new Error('Payment window closed. Payment failed.');
+                        // Check if popup was closed BEFORE checking status
+                        if (checkWindowClosed() && lastStatus === 'PENDING') {
+                            // Window closed and payment still pending - mark as canceled
+                            setStatus('Payment window closed. Marking payment as incomplete...');
+                            try {
+                                await cancelPayment(charge.chargeId);
+                                throw new Error('Payment canceled: Payment window was closed before completion.');
+                            } catch (cancelError: any) {
+                                // If cancel fails, still throw error to stop minting
+                                throw new Error('Payment incomplete: Payment window was closed. Please try again.');
+                            }
                         }
 
-                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        await new Promise(resolve => setTimeout(resolve, pollInterval));
 
-                        const statusResponse = await getPaymentStatus(charge.chargeId);
-                        setStatus(`Checking payment... (${statusResponse.status})`);
-
-                        if (statusResponse.status === 'PENDING' || statusResponse.status === 'COMPLETED') {
-                            paymentVerified = true;
-                            setStatus('✅ Payment confirmed! Starting NFT minting...');
-                            break;
+                        // Check window closure again after delay
+                        if (checkWindowClosed() && lastStatus === 'PENDING') {
+                            setStatus('Payment window closed. Marking payment as incomplete...');
+                            try {
+                                await cancelPayment(charge.chargeId);
+                                throw new Error('Payment canceled: Payment window was closed before completion.');
+                            } catch (cancelError: any) {
+                                throw new Error('Payment incomplete: Payment window was closed. Please try again.');
+                            }
                         }
 
-                        if (statusResponse.status === 'FAILED') {
-                            throw new Error('Payment failed. Please try again.');
+                        try {
+                            // Use check-status endpoint which actively checks Coinbase and updates DB
+                            const statusResponse = await checkPaymentStatus(charge.chargeId);
+                            lastStatus = statusResponse.status;
+                            
+                            setStatus(`Checking payment status... (${statusResponse.status})`);
+
+                            if (statusResponse.status === 'COMPLETED') {
+                                paymentVerified = true;
+                                setStatus('✅ Payment confirmed! Database updated. Starting NFT minting...');
+                                break;
+                            }
+
+                            if (statusResponse.status === 'FAILED' || statusResponse.status === 'EXPIRED' || statusResponse.status === 'CANCELED') {
+                                throw new Error(`Payment ${statusResponse.status.toLowerCase()}. Please try again.`);
+                            }
+
+                            // Continue polling if still PENDING
+                            if (statusResponse.status === 'PENDING') {
+                                setStatus(`Waiting for payment... (${attempts + 1}/${maxAttempts} checks)`);
+                            }
+                        } catch (error: any) {
+                            // If check-status fails, fall back to regular status check
+                            console.warn('check-status failed, falling back to status check:', error);
+                            try {
+                                const fallbackStatus = await getPaymentStatus(charge.chargeId);
+                                if (fallbackStatus.status === 'COMPLETED') {
+                                    paymentVerified = true;
+                                    setStatus('✅ Payment confirmed! Starting NFT minting...');
+                                    break;
+                                }
+                            } catch (fallbackError) {
+                                console.error('Both status checks failed:', fallbackError);
+                            }
                         }
 
                         attempts++;
                     }
 
                     if (!paymentVerified) {
-                        throw new Error('Payment timeout. Please try again.');
+                        // Final check: if window was closed, mark as canceled
+                        if (popup && popup.closed && lastStatus === 'PENDING') {
+                            try {
+                                await cancelPayment(charge.chargeId);
+                            } catch (cancelError) {
+                                console.error('Failed to cancel payment:', cancelError);
+                            }
+                            throw new Error('Payment incomplete: Payment window was closed. Please try again.');
+                        }
+                        throw new Error('Payment timeout. Please check your payment status or try again.');
                     }
                 }
             }

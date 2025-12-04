@@ -30,14 +30,18 @@ export const UserNftList = () => {
         if (!walletPublicKey) return;
         setLoading(true);
         try {
-            const data = await fetchNftByOwner(walletPublicKey.toString());
-            setNfts(data);
-        } catch (error) {
+            const walletAddress = walletPublicKey.toString();
+            console.log('Loading NFTs for wallet:', walletAddress);
+            const data = await fetchNftByOwner(walletAddress);
+            console.log('Fetched NFTs:', data.length);
+            setNfts(data || []);
+        } catch (error: any) {
             console.error('Error fetching user NFTs:', error);
+            setNfts([]); // Set empty array on error
             toast({
                 variant: "destructive",
                 title: "Error",
-                description: "Failed to fetch your NFTs",
+                description: error.message || "Failed to fetch your NFTs. Please try again.",
             });
         } finally {
             setLoading(false);

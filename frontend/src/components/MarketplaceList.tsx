@@ -135,15 +135,39 @@ export const MarketplaceList = () => {
         setLoading(true);
         try {
             console.log('🔍 Fetching marketplace listings from escrow accounts');
-            const response = await fetch(`${API_BASE_URL}/listings`);
+            
+            // Add timeout to fetch
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000);
+            
+            const response = await fetch(`${API_BASE_URL}/listings`, {
+                signal: controller.signal,
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            });
+            
+            clearTimeout(timeoutId);
+            
             if (!response.ok) {
-                throw new Error(`Failed to fetch listings: ${response.statusText}`);
+                const errorText = await response.text();
+                console.error('Failed to fetch listings:', errorText);
+                setListings([]);
+                return;
             }
             const data = await response.json();
             console.log('Received listings:', data.listings);
             setListings(data.listings || []);
-        } catch (error) {
+        } catch (error: any) {
             console.error('Error fetching marketplace listings:', error);
+            setListings([]); // Set empty array on error
+            if (error.name !== 'AbortError') {
+                toast({
+                    variant: "destructive",
+                    title: "Error",
+                    description: "Failed to load marketplace listings. Please try again.",
+                });
+            }
         } finally {
             setLoading(false);
         }

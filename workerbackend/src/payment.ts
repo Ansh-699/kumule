@@ -7,7 +7,8 @@ async function logTransaction(
     chargeId: string,
     amount: number,
     currency: string,
-    walletAddress?: string
+    walletAddress?: string,
+    network?: string
 ): Promise<void> {
     if (!connectionString) return
     
@@ -31,6 +32,7 @@ async function logTransaction(
                     status: 'PENDING',
                     walletAddress: walletAddress || null,
                     currency: currency,
+                    network: network || null,
                     metadata: JSON.stringify({
                         source: 'charge_created',
                         createdAt: new Date().toISOString()
@@ -60,7 +62,7 @@ export const createCharge = async (c: Context<{ Bindings: CloudflareBindings }>)
             
             // Log the demo transaction
             if (connectionString) {
-                await logTransaction(connectionString, chargeId, amount, currency, walletAddress)
+                await logTransaction(connectionString, chargeId, amount, currency, walletAddress, 'coinbase')
             }
 
             return c.json({
@@ -79,7 +81,7 @@ export const createCharge = async (c: Context<{ Bindings: CloudflareBindings }>)
 
          //DEMO MODE FOR TESTING
            console.log('[Payment] Forcing demo mode as requested by user');
-           return await getDemoResponse('Forced demo mode')
+         return await getDemoResponse('Forced demo mode')
 
        /*
         if (!apiKey || apiKey.trim() === '') {
@@ -128,7 +130,7 @@ export const createCharge = async (c: Context<{ Bindings: CloudflareBindings }>)
         
         // Log the transaction to database
         if (connectionString) {
-            await logTransaction(connectionString, charge.id, amount, currency, walletAddress)
+            await logTransaction(connectionString, charge.id, amount, currency, walletAddress, 'coinbase')
         }
 
         return c.json({
@@ -153,7 +155,7 @@ export const createCharge = async (c: Context<{ Bindings: CloudflareBindings }>)
         // Try to log the fallback transaction
         const connectionString = getConnectionString(c.env)
         if (connectionString) {
-            await logTransaction(connectionString, chargeId, 0, 'USD')
+            await logTransaction(connectionString, chargeId, 0, 'USD', undefined, 'coinbase')
         }
 
         return c.json({
@@ -268,5 +270,298 @@ export const verifyPayment = async (c: Context<{ Bindings: CloudflareBindings }>
             error: String(error),
             note: 'Demo mode (error fallback) - payment auto-confirmed'
         }, 200)
+    }
+}
+
+// Active status check endpoint - checks Coinbase API and updates database
+export const checkPaymentStatus = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    try {
+        const chargeId = c.req.param('chargeId')
+        const connectionString = getConnectionString(c.env)
+        
+        if (!chargeId) {
+            return c.json({ error: 'Missing chargeId' }, 400)
+        }
+
+        // Check status from Coinbase API
+        const result = await checkChargeStatus(chargeId, c.env.COINBASE_COMMERCE_API_KEY)
+        
+        // Map Coinbase status to our transaction status
+        const statusMap: Record<string, string> = {
+            'NEW': 'PENDING',
+            'PENDING': 'PENDING',
+            'COMPLETED': 'COMPLETED',
+            'EXPIRED': 'EXPIRED',
+            'CANCELED': 'CANCELED',
+            'UNRESOLVED': 'PENDING',
+            'RESOLVED': 'COMPLETED'
+        }
+        
+        const transactionStatus = statusMap[result.status] || 'PENDING'
+        
+        // Update database if we have a connection
+        if (connectionString) {
+            try {
+                await withPrisma(connectionString, async (prisma) => {
+                    // Find existing transaction
+                    const existingTx = await prisma.transaction.findUnique({
+                        where: { transactionId: chargeId }
+                    })
+                    
+                    if (existingTx) {
+                        // Check if status has changed
+                        if (existingTx.status !== transactionStatus) {
+                            // Extract payment details from result
+                            const payments = result.payments || []
+                            const payment = payments.length > 0 ? payments[0] : null
+                            
+                            const walletAddress = payment?.payer_addresses?.[0] || 
+                                                 payment?.from_address || 
+                                                 existingTx.walletAddress
+                            
+                            const txHash = payment?.transaction_id || 
+                                         payment?.tx_hash || 
+                                         existingTx.txHash
+                            
+                            const currency = payment?.value?.currency || 
+                                           result.code?.split('_')[1]?.toUpperCase() || 
+                                           existingTx.currency || 'USD'
+                            
+                            const network = payment?.network || existingTx.network
+                            
+                            // Update transaction
+                            await prisma.transaction.update({
+                                where: { transactionId: chargeId },
+                                data: {
+                                    status: transactionStatus,
+                                    walletAddress: walletAddress || existingTx.walletAddress,
+                                    txHash: txHash || existingTx.txHash,
+                                    currency: currency || existingTx.currency,
+                                    network: network || existingTx.network,
+                                    metadata: JSON.stringify({
+                                        ...(existingTx.metadata ? (typeof existingTx.metadata === 'string' ? JSON.parse(existingTx.metadata) : existingTx.metadata) : {}),
+                                        lastChecked: new Date().toISOString(),
+                                        coinbaseStatus: result.status,
+                                        timeline: result.timeline || []
+                                    })
+                                }
+                            })
+                            
+                            console.log(`[Payment Check] Updated transaction ${chargeId} from ${existingTx.status} to ${transactionStatus}`)
+                            
+                            // Also log as payment event if status changed to COMPLETED
+                            if (transactionStatus === 'COMPLETED' && existingTx.status !== 'COMPLETED') {
+                                await prisma.paymentLog.create({
+                                    data: {
+                                        eventType: 'charge:confirmed',
+                                        chargeId: chargeId,
+                                        chargeCode: result.code,
+                                        walletAddress: walletAddress,
+                                        txHash: txHash,
+                                        amount: existingTx.amount,
+                                        currency: currency,
+                                        network: network,
+                                        status: 'COMPLETED',
+                                        rawPayload: JSON.stringify(result),
+                                        verified: !result.isDemo
+                                    }
+                                })
+                            }
+                        }
+                    } else {
+                        // Transaction doesn't exist - create it
+                        let user = await prisma.user.findFirst({
+                            orderBy: { createdAt: 'desc' }
+                        })
+                        if (!user) {
+                            user = await prisma.user.create({ data: {} })
+                        }
+                        
+                        const payments = result.payments || []
+                        const payment = payments.length > 0 ? payments[0] : null
+                        
+                        // Extract amount from charge pricing if available
+                        const amountFromCharge = result.payments?.length > 0 
+                            ? parseFloat(result.payments[0]?.value?.amount || '0')
+                            : 0
+                        
+                        await prisma.transaction.create({
+                            data: {
+                                transactionId: chargeId,
+                                userId: user.id,
+                                amount: amountFromCharge || 0,
+                                transactionType: 'PAYMENT',
+                                status: transactionStatus,
+                                walletAddress: payment?.payer_addresses?.[0] || payment?.from_address || null,
+                                txHash: payment?.transaction_id || payment?.tx_hash || null,
+                                currency: payment?.value?.currency || 'USD',
+                                network: payment?.network || 'coinbase',
+                                metadata: JSON.stringify({
+                                    source: 'status_check',
+                                    coinbaseStatus: result.status,
+                                    timeline: result.timeline || [],
+                                    chargeCode: result.code
+                                })
+                            }
+                        })
+                        
+                        console.log(`[Payment Check] Created new transaction for ${chargeId}`)
+                    }
+                })
+            } catch (dbError) {
+                console.error('[Payment Check] Database update error:', dbError)
+                // Don't fail the request if DB update fails
+            }
+        }
+        
+        // Return status response
+        if (result.isDemo) {
+            return c.json({
+                status: 'COMPLETED',
+                chargeId,
+                isDemoMode: true,
+                note: 'Demo mode - payment auto-confirmed'
+            })
+        }
+        
+        return c.json({
+            status: transactionStatus,
+            chargeId: result.chargeId,
+            code: result.code,
+            timeline: result.timeline,
+            payments: result.payments,
+            isDemoMode: false,
+            updated: true
+        })
+        
+    } catch (error: any) {
+        console.error('Check payment status error:', error)
+        
+        // Try to get status from database as fallback
+        const chargeId = c.req.param('chargeId')
+        const connectionString = getConnectionString(c.env)
+        
+        if (connectionString && chargeId) {
+            try {
+                const dbStatus = await withPrisma(connectionString, async (prisma) => {
+                    const tx = await prisma.transaction.findUnique({
+                        where: { transactionId: chargeId }
+                    })
+                    return tx?.status || 'PENDING'
+                })
+                
+                return c.json({
+                    status: dbStatus,
+                    chargeId,
+                    isDemoMode: false,
+                    error: 'Failed to check Coinbase API, using database status',
+                    note: error.message
+                })
+            } catch (dbError) {
+                // Fall through to error response
+            }
+        }
+        
+        return c.json({
+            error: error.message || 'Failed to check payment status',
+            chargeId: c.req.param('chargeId')
+        }, 500)
+    }
+}
+
+// Mark payment as failed/incomplete when user closes payment window
+export const cancelPayment = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    try {
+        const chargeId = c.req.param('chargeId')
+        const connectionString = getConnectionString(c.env)
+        
+        if (!chargeId) {
+            return c.json({ error: 'Missing chargeId' }, 400)
+        }
+
+        // Update database to mark payment as CANCELED/INCOMPLETE
+        if (connectionString) {
+            try {
+                await withPrisma(connectionString, async (prisma) => {
+                    const existingTx = await prisma.transaction.findUnique({
+                        where: { transactionId: chargeId }
+                    })
+                    
+                    if (existingTx) {
+                        // Only update if still PENDING (don't overwrite COMPLETED payments)
+                        if (existingTx.status === 'PENDING') {
+                            await prisma.transaction.update({
+                                where: { transactionId: chargeId },
+                                data: {
+                                    status: 'CANCELED',
+                                    metadata: JSON.stringify({
+                                        ...(existingTx.metadata ? (typeof existingTx.metadata === 'string' ? JSON.parse(existingTx.metadata) : existingTx.metadata) : {}),
+                                        canceledAt: new Date().toISOString(),
+                                        reason: 'Payment window closed by user',
+                                        canceledBy: 'user'
+                                    })
+                                }
+                            })
+                            
+                            console.log(`[Payment Cancel] Marked transaction ${chargeId} as CANCELED (window closed)`)
+                            
+                            // Log cancellation event
+                            await prisma.paymentLog.create({
+                                data: {
+                                    eventType: 'charge:canceled',
+                                    chargeId: chargeId,
+                                    chargeCode: existingTx.metadata ? (() => {
+                                        try {
+                                            const meta = typeof existingTx.metadata === 'string' 
+                                                ? JSON.parse(existingTx.metadata) 
+                                                : existingTx.metadata
+                                            return meta.chargeCode || null
+                                        } catch {
+                                            return null
+                                        }
+                                    })() : null,
+                                    walletAddress: existingTx.walletAddress,
+                                    amount: existingTx.amount,
+                                    currency: existingTx.currency,
+                                    network: existingTx.network,
+                                    status: 'CANCELED',
+                                    rawPayload: JSON.stringify({
+                                        reason: 'Payment window closed by user',
+                                        canceledAt: new Date().toISOString(),
+                                        originalTransaction: {
+                                            amount: existingTx.amount,
+                                            currency: existingTx.currency,
+                                            network: existingTx.network
+                                        }
+                                    }),
+                                    verified: false
+                                }
+                            })
+                        } else {
+                            console.log(`[Payment Cancel] Transaction ${chargeId} already has status ${existingTx.status}, not updating`)
+                        }
+                    } else {
+                        console.log(`[Payment Cancel] Transaction ${chargeId} not found in database`)
+                    }
+                })
+            } catch (dbError) {
+                console.error('[Payment Cancel] Database update error:', dbError)
+                // Don't fail the request if DB update fails
+            }
+        }
+        
+        return c.json({
+            success: true,
+            chargeId,
+            status: 'CANCELED',
+            message: 'Payment marked as canceled'
+        })
+        
+    } catch (error: any) {
+        console.error('Cancel payment error:', error)
+        return c.json({
+            error: error.message || 'Failed to cancel payment',
+            chargeId: c.req.param('chargeId')
+        }, 500)
     }
 }

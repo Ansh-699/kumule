@@ -18,6 +18,32 @@ export const getPaymentStatus = async (chargeId: string) => {
     return response.json();
 };
 
+// Check payment status and update database (active check)
+export const checkPaymentStatus = async (chargeId: string) => {
+    const response = await fetch(`${API_BASE_URL}/api/payment/check-status/${chargeId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: 'Failed to check payment status' }));
+        throw new Error(error.error || 'Failed to check payment status');
+    }
+    return response.json();
+};
+
+// Cancel payment when window is closed
+export const cancelPayment = async (chargeId: string) => {
+    const response = await fetch(`${API_BASE_URL}/api/payment/cancel/${chargeId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: 'Failed to cancel payment' }));
+        throw new Error(error.error || 'Failed to cancel payment');
+    }
+    return response.json();
+};
+
 // Notify backend of Solana payment (for webhook-style logging)
 export const notifySolanaPayment = async (
     solanaSignature: string, 
@@ -96,29 +122,138 @@ export interface NftMetadata {
     };
 }
 
+// Reward system APIs
+export const getRewardAccount = async (walletAddress: string) => {
+    const response = await fetch(`${API_BASE_URL}/api/rewards/account?walletAddress=${walletAddress}`);
+    if (!response.ok) throw new Error('Failed to get reward account');
+    return response.json();
+};
+
+export const recordInteraction = async (walletAddress: string, interactionType: string = 'CLICK', points: number = 10) => {
+    const response = await fetch(`${API_BASE_URL}/api/rewards/interaction`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ walletAddress, interactionType, points })
+    });
+    if (!response.ok) throw new Error('Failed to record interaction');
+    return response.json();
+};
+
+export const claimNftReward = async (walletAddress: string, nftAsset: string, requiredPoints: number, rewardType: string = 'MUSIC_NFT') => {
+    const response = await fetch(`${API_BASE_URL}/api/rewards/claim`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ walletAddress, nftAsset, requiredPoints, rewardType })
+    });
+    if (!response.ok) throw new Error('Failed to claim reward');
+    return response.json();
+};
+
+export const getAvailableRewards = async () => {
+    const response = await fetch(`${API_BASE_URL}/api/rewards/available`);
+    if (!response.ok) throw new Error('Failed to get available rewards');
+    return response.json();
+};
+
 export const fetchNftByAsset = async (assetAddress: string): Promise<NftAsset> => {
     console.log('API: fetchNftByAsset', assetAddress);
-    const response = await fetch(`${API_BASE_URL}?asset=${assetAddress}`);
-    console.log('API Response:', response.status, response.ok);
-    if (!response.ok) {
-        throw new Error('Failed to fetch NFT by asset');
+    
+    // Clean the address
+    const cleanAddress = assetAddress.trim().replace(/[^A-Za-z0-9]/g, '');
+    
+    if (!cleanAddress || cleanAddress.length < 32) {
+        throw new Error('Invalid asset address');
     }
-    const data = await response.json();
-    console.log('API Data:', data);
-    return data;
+    
+    try {
+        // Add timeout to fetch
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+        
+        const response = await fetch(`${API_BASE_URL}?asset=${encodeURIComponent(cleanAddress)}`, {
+            signal: controller.signal,
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        });
+        
+        clearTimeout(timeoutId);
+        
+        console.log('API Response:', response.status, response.ok);
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('API Error Response:', errorText);
+            throw new Error(`Failed to fetch NFT by asset: ${response.statusText}`);
+        }
+        const data = await response.json();
+        console.log('API Data:', data);
+        return data;
+    } catch (error: any) {
+        console.error('Error in fetchNftByAsset:', error);
+        if (error.name === 'AbortError') {
+            throw new Error('Request timed out');
+        }
+        throw error;
+    }
 };
 
 export const fetchNftByOwner = async (ownerAddress: string): Promise<NftAsset[]> => {
     console.log('API: fetchNftByOwner', ownerAddress);
-    const url = `${API_BASE_URL}?owner=${ownerAddress}`;
-    console.log('API URL:', url);
-    const response = await fetch(url);
-    console.log('API Response:', response.status, response.ok);
-    if (!response.ok) {
-        throw new Error('Failed to fetch NFTs by owner');
+    
+    // Clean the address - remove any invalid characters
+    const cleanAddress = ownerAddress.trim().replace(/[^A-Za-z0-9]/g, '');
+    
+    if (!cleanAddress || cleanAddress.length < 32) {
+        console.error('Invalid wallet address:', ownerAddress);
+        return [];
     }
-    const data = await response.json();
-    console.log('API Data:', { type: typeof data, isArray: Array.isArray(data), length: data?.length });
-    return data;
+    
+    const url = `${API_BASE_URL}/owner?owner=${encodeURIComponent(cleanAddress)}`;
+    console.log('API URL:', url);
+    
+    try {
+        // Add timeout to fetch
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+        
+        const response = await fetch(url, {
+            signal: controller.signal,
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        });
+        
+        clearTimeout(timeoutId);
+        
+        console.log('API Response:', response.status, response.ok);
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('API Error Response:', errorText);
+            // Return empty array instead of throwing for better UX
+            return [];
+        }
+        
+        const data = await response.json();
+        console.log('API Data:', { type: typeof data, isArray: Array.isArray(data), length: data?.length });
+        
+        // Handle both array and object responses
+        if (Array.isArray(data)) {
+            return data;
+        } else if (data && Array.isArray(data.items)) {
+            return data.items;
+        } else if (data && typeof data === 'object' && !data.error) {
+            // If it's a single asset object, wrap it in an array
+            return [data];
+        }
+        return [];
+    } catch (error: any) {
+        console.error('Error in fetchNftByOwner:', error);
+        if (error.name === 'AbortError') {
+            console.error('Request timed out');
+        }
+        // Return empty array instead of throwing for better UX
+        return [];
+    }
 };
 
