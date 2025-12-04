@@ -1,4 +1,68 @@
-export const API_BASE_URL = 'https://workerbackend.ansht.workers.dev/';
+// Local dev backend (Cloudflare Worker via `bun run dev` / `wrangler dev`)
+// Make sure this port matches the one shown in your worker dev logs.
+export const API_BASE_URL = 'http://localhost:8787'; // Production Worker URL https://kumele-backend.ansht.workers.dev
+
+export const createPayment = async (amount: number, currency: string = 'USDC') => {
+    const response = await fetch(`${API_BASE_URL}/api/payment/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount, currency })
+    });
+    if (!response.ok) throw new Error('Failed to create payment');
+    return response.json();
+};
+
+export const getPaymentStatus = async (chargeId: string) => {
+    const response = await fetch(`${API_BASE_URL}/api/payment/status/${chargeId}`);
+    if (!response.ok) throw new Error('Failed to get payment status');
+    return response.json();
+};
+
+// Notify backend of Solana payment (for webhook-style logging)
+export const notifySolanaPayment = async (
+    solanaSignature: string, 
+    walletAddress: string, 
+    amount: number,
+    chargeId?: string,
+    transactionType: string = 'PAYMENT'
+) => {
+    const response = await fetch(`${API_BASE_URL}/api/payments/webhook`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            solanaSignature,
+            walletAddress,
+            amount,
+            chargeId,
+            transactionType
+        })
+    });
+    if (!response.ok) throw new Error('Failed to notify payment');
+    return response.json();
+};
+
+// Get transaction history for a wallet
+export const getTransactionHistory = async (walletAddress?: string, limit: number = 50) => {
+    const params = new URLSearchParams();
+    if (walletAddress) params.append('walletAddress', walletAddress);
+    params.append('limit', limit.toString());
+    
+    const response = await fetch(`${API_BASE_URL}/api/payments/transactions?${params}`);
+    if (!response.ok) throw new Error('Failed to get transaction history');
+    return response.json();
+};
+
+// Get payment logs (for debugging/admin)
+export const getPaymentLogs = async (chargeId?: string, walletAddress?: string, limit: number = 50) => {
+    const params = new URLSearchParams();
+    if (chargeId) params.append('chargeId', chargeId);
+    if (walletAddress) params.append('walletAddress', walletAddress);
+    params.append('limit', limit.toString());
+    
+    const response = await fetch(`${API_BASE_URL}/api/payments/logs?${params}`);
+    if (!response.ok) throw new Error('Failed to get payment logs');
+    return response.json();
+};
 
 //https://workerbackend.ansht.workers.dev --->main cloudflare worker 
 export interface NftAsset {

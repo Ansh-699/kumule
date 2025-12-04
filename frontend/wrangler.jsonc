@@ -4,7 +4,7 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "frontend",
+	"name": "kumele",
 	"main": "worker/index.ts",
 	"compatibility_date": "2025-11-19",
 	"assets": {

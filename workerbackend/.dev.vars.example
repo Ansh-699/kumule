@@ -1,3 +1,10 @@
 
 # Get your API key from: https://www.helius.dev/
 SOLANA_RPC_URL="https://devnet.helius-rpc.com/?api-key=YOUR_HELIUS_API_KEY_HERE"
+
+# Get your Coinbase CDP API keys from: https://portal.cdp.coinbase.com/projects/api-keys
+COINBASE_API_KEY_NAME="your-api-key-name"
+COINBASE_API_KEY_PRIVATE_KEY="your-api-key-private-key"
+
+# Get your Coinbase Commerce API key from: https://commerce.coinbase.com/dashboard/settings
+COINBASE_COMMERCE_API_KEY="b08b734c-10fd-444b-8f4a-6fd743040559"

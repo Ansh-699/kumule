@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { VersionedTransaction } from '@solana/web3.js';
-import { API_BASE_URL } from '@/services/api';
+import { notifySolanaPayment } from '../services/api';
+import { API_BASE_URL, createPayment, getPaymentStatus } from '@/services/api';
 import { useUmi } from '@/hooks/useUmi';
 import { createGenericFile } from '@metaplex-foundation/umi';
 import { Buffer } from 'buffer';
@@ -10,6 +11,7 @@ import { CollectionCreator } from './CollectionCreator';
 import { CollectionNftMinter } from './CollectionNftMinter';
 
 type Tab = 'nft' | 'create-collection' | 'mint-to-collection';
+type PaymentMethod = 'wallet' | 'coinbase';
 
 export const NftCreator = () => {
     const [activeTab, setActiveTab] = useState<Tab>('nft');
@@ -20,6 +22,7 @@ export const NftCreator = () => {
     const [status, setStatus] = useState('');
     const [error, setError] = useState('');
     const [createdNft, setCreatedNft] = useState<string | null>(null);
+    const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('wallet');
 
     const [formData, setFormData] = useState({
         name: '',
@@ -82,34 +85,112 @@ export const NftCreator = () => {
         setCreatedNft(null);
 
         try {
-            // 1. Upload Main File
-            setStatus('Uploading main file to Irys (1/3)... Please sign the upload request.');
-            const fileBuffer = await mainFile.arrayBuffer();
-            const genericFile = createGenericFile(new Uint8Array(fileBuffer), mainFile.name, { contentType: mainFile.type });
-            const [fileUri] = await umi.uploader.upload([genericFile]);
-            console.log('Main File Uploaded:', fileUri);
+            // Step 1: Handle Coinbase Payment if selected
+            let charge: any;
+            if (paymentMethod === 'coinbase') {
+                setStatus('Creating Coinbase payment charge...');
+                charge = await createPayment(0.5, 'USD');
+                console.log("CREATED CHARGE ID:", charge.chargeId);
 
+                // Demo mode: Skip polling entirely - payment auto-confirmed
+                if (charge.isDemoMode) {
+                    setStatus('✅ Demo mode: Payment auto-confirmed! Starting NFT minting...');
+                } else {
+                    // Real payment flow
+                    setStatus(`Payment required: $${charge.amount || 0.5} USD - Opening checkout...`);
+                    const popup = window.open(charge.hostedUrl, '_blank', 'width=500,height=700');
+                    
+                    setStatus('Waiting for payment confirmation...');
+
+                    // Poll for payment status (check every 3 seconds for up to 5 minutes)
+                    const maxAttempts = 100;
+                    let attempts = 0;
+                    let paymentVerified = false;
+
+                    while (attempts < maxAttempts && !paymentVerified) {
+                        if (popup && popup.closed) {
+                            throw new Error('Payment window closed. Payment failed.');
+                        }
+
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+
+                        const statusResponse = await getPaymentStatus(charge.chargeId);
+                        setStatus(`Checking payment... (${statusResponse.status})`);
+
+                        if (statusResponse.status === 'PENDING' || statusResponse.status === 'COMPLETED') {
+                            paymentVerified = true;
+                            setStatus('✅ Payment confirmed! Starting NFT minting...');
+                            break;
+                        }
+
+                        if (statusResponse.status === 'FAILED') {
+                            throw new Error('Payment failed. Please try again.');
+                        }
+
+                        attempts++;
+                    }
+
+                    if (!paymentVerified) {
+                        throw new Error('Payment timeout. Please try again.');
+                    }
+                }
+            }
+
+            // Step 2: Prepare all files for batch upload (reduces signature requests)
+            setStatus('Preparing files for upload...');
+            console.log('Starting upload...');
+            console.log('Umi Identity:', umi.identity.publicKey.toString());
+            console.log('Wallet Public Key:', publicKey?.toString());
+
+            if (umi.identity.publicKey.toString() !== publicKey?.toString()) {
+                throw new Error('Wallet mismatch. Please reconnect.');
+            }
+
+            // Prepare all files in parallel (CPU work, no network)
+            const [mainFileBuffer, coverFileBuffer] = await Promise.all([
+                mainFile.arrayBuffer(),
+                coverFile ? coverFile.arrayBuffer() : Promise.resolve(null)
+            ]);
+
+            const filesToUpload = [
+                createGenericFile(new Uint8Array(mainFileBuffer), mainFile.name, { contentType: mainFile.type })
+            ];
+
+            // Add cover file to batch if it exists
+            if (coverFile && coverFileBuffer) {
+                filesToUpload.push(
+                    createGenericFile(new Uint8Array(coverFileBuffer), coverFile.name, { contentType: coverFile.type })
+                );
+            }
+
+            // Single batch upload for all files (1 signature request instead of 2)
+            setStatus(`Uploading ${filesToUpload.length} file(s) to Irys (1/2)... Please sign once.`);
+            let uploadedUris: string[];
+            try {
+                uploadedUris = await umi.uploader.upload(filesToUpload);
+                console.log('Batch upload successful:', uploadedUris);
+            } catch (uploadErr) {
+                console.error('Upload failed:', uploadErr);
+                throw new Error(`Failed to upload files: ${uploadErr}`);
+            }
+
+            const fileUri = uploadedUris[0];
             let imageUri = fileUri;
             let animationUri = undefined;
             let category = 'image';
 
-            // 2. Upload Cover if needed
+            // Handle multimedia files
             if (isMultimedia) {
                 category = mainFile.type.startsWith('video/') ? 'video' : 'audio';
                 animationUri = fileUri;
-
-                if (coverFile) {
-                    setStatus('Uploading cover image to Irys... Please sign.');
-                    const coverBuffer = await coverFile.arrayBuffer();
-                    const genericCover = createGenericFile(new Uint8Array(coverBuffer), coverFile.name, { contentType: coverFile.type });
-                    const [coverUri] = await umi.uploader.upload([genericCover]);
-                    console.log('Cover Uploaded:', coverUri);
-                    imageUri = coverUri;
+                // Cover was uploaded in the same batch
+                if (coverFile && uploadedUris.length > 1) {
+                    imageUri = uploadedUris[1];
                 }
             }
 
-            // 3. Upload Metadata
-            setStatus('Uploading metadata to Irys (2/3)... Please sign the upload request.');
+            // Step 3: Upload Metadata (single request)
+            setStatus('Uploading metadata to Irys (2/2)... Please sign.');
             const metadata = {
                 name: formData.name,
                 symbol: formData.symbol,
@@ -125,20 +206,29 @@ export const NftCreator = () => {
                 }
             };
             const metadataUri = await umi.uploader.uploadJson(metadata);
-            console.log('Metadata Uploaded:', metadataUri);
 
-            // 4. Mint NFT
-            setStatus('Building mint transaction (3/3)...');
+            // Step 4: Mint NFT
+            setStatus('Building mint transaction...');
+
+            // Prepare mint request body
+            const mintBody: any = {
+                uri: metadataUri,
+                name: formData.name,
+                owner: publicKey.toString(),
+                paymentMethod: paymentMethod
+            };
+
+            // Add chargeId if payment method is coinbase
+            if (paymentMethod === 'coinbase' && 'chargeId' in (charge || {})) {
+                mintBody.chargeId = charge.chargeId;
+            }
+
             const response = await fetch(`${API_BASE_URL}/mint`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    uri: metadataUri,
-                    name: formData.name,
-                    owner: publicKey.toString(),
-                }),
+                body: JSON.stringify(mintBody),
             });
 
             if (!response.ok) {
@@ -149,7 +239,7 @@ export const NftCreator = () => {
             const data = await response.json();
             const { transaction, mint } = data;
 
-            setStatus('Signing mint transaction (3/3)... Please approve the transaction.');
+            setStatus('Signing mint transaction... Please approve.');
 
             const txBuffer = Buffer.from(transaction, 'base64');
             const tx = VersionedTransaction.deserialize(new Uint8Array(txBuffer));
@@ -162,10 +252,22 @@ export const NftCreator = () => {
             setStatus('Confirming transaction...');
             await connection.confirmTransaction(signature, 'confirmed');
 
-            console.log('Transaction signature:', signature);
-            console.log('NFT minted:', mint);
+            // Log the mint transaction to database
+            try {
+                await notifySolanaPayment(
+                    signature,
+                    publicKey.toString(),
+                    0, // Minting is free (only gas)
+                    mint,
+                    'MINT'
+                );
+                console.log('Mint transaction logged to database');
+            } catch (logError) {
+                console.warn('Failed to log mint transaction:', logError);
+            }
+
             setCreatedNft(mint);
-            setStatus('Success! NFT Minted.');
+            setStatus('🎉 Success! NFT Minted.');
 
             // Reset form
             setFormData({ name: '', symbol: '', description: '' });
@@ -194,8 +296,8 @@ export const NftCreator = () => {
                 <button
                     onClick={() => setActiveTab('nft')}
                     className={`flex-1 px-4 py-2.5 rounded-md font-medium transition-all ${activeTab === 'nft'
-                            ? 'bg-background text-foreground shadow-sm border border-border'
-                            : 'text-muted-foreground hover:text-foreground'
+                        ? 'bg-background text-foreground shadow-sm border border-border'
+                        : 'text-muted-foreground hover:text-foreground'
                         }`}
                 >
                     Create NFT
@@ -203,8 +305,8 @@ export const NftCreator = () => {
                 <button
                     onClick={() => setActiveTab('create-collection')}
                     className={`flex-1 px-4 py-2.5 rounded-md font-medium transition-all ${activeTab === 'create-collection'
-                            ? 'bg-background text-foreground shadow-sm border border-border'
-                            : 'text-muted-foreground hover:text-foreground'
+                        ? 'bg-background text-foreground shadow-sm border border-border'
+                        : 'text-muted-foreground hover:text-foreground'
                         }`}
                 >
                     Create Collection
@@ -212,8 +314,8 @@ export const NftCreator = () => {
                 <button
                     onClick={() => setActiveTab('mint-to-collection')}
                     className={`flex-1 px-4 py-2.5 rounded-md font-medium transition-all ${activeTab === 'mint-to-collection'
-                            ? 'bg-background text-foreground shadow-sm border border-border'
-                            : 'text-muted-foreground hover:text-foreground'
+                        ? 'bg-background text-foreground shadow-sm border border-border'
+                        : 'text-muted-foreground hover:text-foreground'
                         }`}
                 >
                     Mint to Collection
@@ -229,6 +331,34 @@ export const NftCreator = () => {
                     </CardHeader>
                     <CardContent>
                         <form onSubmit={handleSubmit} className="space-y-4">
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">Payment Method</label>
+                                <div className="flex gap-4">
+                                    <label className="flex items-center gap-2 border p-3 rounded cursor-pointer hover:bg-muted transition-colors">
+                                        <input
+                                            type="radio"
+                                            name="paymentMethod"
+                                            value="wallet"
+                                            checked={paymentMethod === 'wallet'}
+                                            onChange={() => setPaymentMethod('wallet')}
+                                            className="cursor-pointer"
+                                        />
+                                        <span>💳 Solana Wallet (Pay Gas)</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 border p-3 rounded cursor-pointer hover:bg-muted transition-colors">
+                                        <input
+                                            type="radio"
+                                            name="paymentMethod"
+                                            value="coinbase"
+                                            checked={paymentMethod === 'coinbase'}
+                                            onChange={() => setPaymentMethod('coinbase')}
+                                            className="cursor-pointer"
+                                        />
+                                        <span>🪙 Coinbase ($10 USD)</span>
+                                    </label>
+                                </div>
+                            </div>
+
                             <div className="space-y-2">
                                 <label htmlFor="name" className="text-sm font-medium">Name</label>
                                 <input
@@ -329,7 +459,7 @@ export const NftCreator = () => {
                                 disabled={loading || !publicKey}
                                 className="w-full inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2"
                             >
-                                {loading ? status : 'Create NFT'}
+                                {loading ? status : (paymentMethod === 'coinbase' ? '🪙 Pay $0.50 and Mint NFT' : '💳 Mint NFT')}
                             </button>
                         </form>
                     </CardContent>

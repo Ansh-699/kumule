@@ -13,7 +13,8 @@ const __dirname = path.dirname(__filename);
 // https://vite.dev/config/
 export default defineConfig({
   define: {
-    'process.env': {}
+    'process.env': {},
+    'process.version': JSON.stringify('v16.0.0'),
   },
   plugins: [
     react(),

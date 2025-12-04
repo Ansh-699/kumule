@@ -5,9 +5,39 @@ import { BN, Program, AnchorProvider } from '@coral-xyz/anchor'
 import { createNoopSigner, publicKey as umiPublicKey, signerIdentity } from '@metaplex-foundation/umi'
 import { getUmi } from './umi'
 import { fetchAssetV1, getAssetV1GpaBuilder } from '@metaplex-foundation/mpl-core'
-
+import { withPrisma, getConnectionString } from './db'
+import { PrismaClient } from '@prisma/client'
 
 const ESCROW_PROGRAM_ID = new PublicKey('4WYfhmmEu1MoSMDQfiN2JEbQV28gSo6vhm9idEL7ArtG')
+
+// Helper to ensure a user exists in the database
+async function ensureUserExists(prisma: PrismaClient, walletAddress: string): Promise<string> {
+    let user = await prisma.user.findFirst({
+        where: {
+            wallets: {
+                some: { walletAddress: walletAddress }
+            }
+        },
+        include: { wallets: true }
+    });
+
+    if (!user) {
+        console.log('DB: Creating new user for wallet', walletAddress)
+        user = await prisma.user.create({
+            data: {
+                wallets: {
+                    create: {
+                        walletAddress: walletAddress,
+                        walletType: 'solana'
+                    }
+                }
+            },
+            include: { wallets: true }
+        });
+    }
+
+    return user.id
+}
 const ESCROW_SEED = Buffer.from('escrow')
 
 function getEscrowPDA(asset: PublicKey, seller: PublicKey): [PublicKey, number] {
@@ -304,6 +334,20 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         const serializedTx = tx.serialize({ requireAllSignatures: false, verifySignatures: false })
         const base64Tx = Buffer.from(serializedTx).toString('base64')
 
+        // Track seller in database
+        const connectionString = getConnectionString(c.env)
+        if (connectionString) {
+            try {
+                await withPrisma(connectionString, async (prisma) => {
+                    await ensureUserExists(prisma, seller)
+                    console.log('List DB: Seller tracked', seller)
+                })
+            } catch (e) {
+                console.error('Failed to track seller in DB:', e)
+                // Don't block the transaction
+            }
+        }
+
         return c.json({ transaction: base64Tx, escrow: escrowPDA.toBase58() })
     } catch (error) {
         console.error('List NFT error:', error)
@@ -371,6 +415,51 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
 
         const serializedTx = tx.serialize({ requireAllSignatures: false, verifySignatures: false })
         const base64Tx = Buffer.from(serializedTx).toString('base64')
+
+        // Track buyer in database and record the purchase
+        const connectionString = getConnectionString(c.env)
+        if (connectionString) {
+            try {
+                await withPrisma(connectionString, async (prisma) => {
+                    // Ensure buyer exists
+                    const buyerUserId = await ensureUserExists(prisma, buyer)
+                    console.log('Buy DB: Buyer tracked', buyer)
+
+                    // Also ensure seller exists
+                    await ensureUserExists(prisma, seller)
+
+                    // Get escrow price for transaction record
+                    const connection = new Connection(c.env.SOLANA_RPC_URL)
+                    const escrowAccountInfo = await connection.getAccountInfo(escrowPDA)
+                    let priceInSol = 0
+                    if (escrowAccountInfo) {
+                        const escrowData = parseEscrowAccount(escrowAccountInfo.data)
+                        priceInSol = Number(escrowData.price) / 1e9
+                    }
+
+                    // Find NFT in database by on-chain ID
+                    const nft = await prisma.nft.findUnique({
+                        where: { nftId: assetId }
+                    })
+
+                    // Record the purchase transaction
+                    await prisma.transaction.create({
+                        data: {
+                            transactionId: `buy_${assetId}_${Date.now()}`,
+                            userId: buyerUserId,
+                            amount: priceInSol,
+                            nftId: nft?.id || null,
+                            transactionType: 'PURCHASE',
+                            status: 'PENDING', // Will be COMPLETED after on-chain confirmation
+                        }
+                    })
+                    console.log('Buy DB: Transaction recorded')
+                })
+            } catch (e) {
+                console.error('Failed to track buyer in DB:', e)
+                // Don't block the transaction
+            }
+        }
 
         return c.json({ transaction: base64Tx })
     } catch (error) {

@@ -5,7 +5,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, ExternalLink, Copy, Check } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
-import { fetchNftByAsset, API_BASE_URL } from '@/services/api';
+import { fetchNftByAsset, API_BASE_URL, notifySolanaPayment } from '@/services/api';
 import type { NftAsset, NftMetadata } from '@/services/api';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { VersionedTransaction } from '@solana/web3.js';
@@ -50,7 +50,7 @@ export const NftDetailPage = () => {
                 }
 
                 // Check if NFT is listed
-                const listingsResponse = await fetch(`${API_BASE_URL}listings`);
+                const listingsResponse = await fetch(`${API_BASE_URL}/listings`);
                 if (listingsResponse.ok) {
                     const data = await listingsResponse.json();
                     const foundListing = data.listings?.find((l: Listing) => l.asset === id);
@@ -101,7 +101,7 @@ export const NftDetailPage = () => {
         try {
             console.log('Buying NFT:', listing.asset, 'for', listing.price, 'SOL');
 
-            const response = await fetch(`${API_BASE_URL}buy`, {
+            const response = await fetch(`${API_BASE_URL}/buy`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -130,6 +130,20 @@ export const NftDetailPage = () => {
             await connection.confirmTransaction(signature, 'confirmed');
 
             console.log('Buy successful, signature:', signature);
+
+            // Log the transaction to database
+            try {
+                await notifySolanaPayment(
+                    signature,
+                    walletPublicKey.toString(),
+                    listing.price,
+                    listing.asset,
+                    'PURCHASE'
+                );
+                console.log('Transaction logged to database');
+            } catch (logError) {
+                console.warn('Failed to log transaction:', logError);
+            }
 
             loadingToast.dismiss();
             toast({

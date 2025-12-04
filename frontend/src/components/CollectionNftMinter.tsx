@@ -95,34 +95,48 @@ export const CollectionNftMinter = () => {
         setCreatedNft(null);
 
         try {
-            // 1. Upload Main File
-            setStatus('Uploading main file to Irys (1/3)... Please sign.');
-            const fileBuffer = await mainFile.arrayBuffer();
-            const genericFile = createGenericFile(new Uint8Array(fileBuffer), mainFile.name, { contentType: mainFile.type });
-            const [fileUri] = await umi.uploader.upload([genericFile]);
-            console.log('Main File Uploaded:', fileUri);
+            // 1. Prepare all files for batch upload (reduces signature requests)
+            setStatus('Preparing files for upload...');
+            
+            // Prepare all files in parallel (CPU work, no network)
+            const [mainFileBuffer, coverFileBuffer] = await Promise.all([
+                mainFile.arrayBuffer(),
+                coverFile ? coverFile.arrayBuffer() : Promise.resolve(null)
+            ]);
 
+            const filesToUpload = [
+                createGenericFile(new Uint8Array(mainFileBuffer), mainFile.name, { contentType: mainFile.type })
+            ];
+
+            // Add cover file to batch if it exists
+            if (coverFile && coverFileBuffer) {
+                filesToUpload.push(
+                    createGenericFile(new Uint8Array(coverFileBuffer), coverFile.name, { contentType: coverFile.type })
+                );
+            }
+
+            // Single batch upload for all files (1 signature request instead of 2)
+            setStatus(`Uploading ${filesToUpload.length} file(s) to Irys (1/2)... Please sign once.`);
+            const uploadedUris = await umi.uploader.upload(filesToUpload);
+            console.log('Batch upload successful:', uploadedUris);
+
+            const fileUri = uploadedUris[0];
             let imageUri = fileUri;
             let animationUri = undefined;
             let category = 'image';
 
-            // 2. Upload Cover if needed
+            // Handle multimedia files
             if (isMultimedia) {
                 category = mainFile.type.startsWith('video/') ? 'video' : 'audio';
                 animationUri = fileUri;
-
-                if (coverFile) {
-                    setStatus('Uploading cover image to Irys... Please sign.');
-                    const coverBuffer = await coverFile.arrayBuffer();
-                    const genericCover = createGenericFile(new Uint8Array(coverBuffer), coverFile.name, { contentType: coverFile.type });
-                    const [coverUri] = await umi.uploader.upload([genericCover]);
-                    console.log('Cover Uploaded:', coverUri);
-                    imageUri = coverUri;
+                // Cover was uploaded in the same batch
+                if (coverFile && uploadedUris.length > 1) {
+                    imageUri = uploadedUris[1];
                 }
             }
 
-            // 3. Upload Metadata
-            setStatus('Uploading metadata to Irys (2/3)... Please sign.');
+            // 2. Upload Metadata (single request)
+            setStatus('Uploading metadata to Irys (2/2)... Please sign.');
             const metadata = {
                 name: formData.name,
                 symbol: formData.symbol,
@@ -140,8 +154,8 @@ export const CollectionNftMinter = () => {
             const metadataUri = await umi.uploader.uploadJson(metadata);
             console.log('Metadata Uploaded:', metadataUri);
 
-            // 4. Mint NFT into Collection
-            setStatus('Building mint transaction (3/3)...');
+            // 3. Mint NFT into Collection
+            setStatus('Building mint transaction...');
             const response = await fetch(`${API_BASE_URL}/mint`, {
                 method: 'POST',
                 headers: {
@@ -163,7 +177,7 @@ export const CollectionNftMinter = () => {
             const data = await response.json();
             const { transaction, mint } = data;
 
-            setStatus('Signing mint transaction (3/3)... Please approve.');
+            setStatus('Signing mint transaction... Please approve.');
 
             const txBuffer = Buffer.from(transaction, 'base64');
             const tx = VersionedTransaction.deserialize(new Uint8Array(txBuffer));

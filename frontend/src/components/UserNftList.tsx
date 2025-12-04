@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
-import { fetchNftByOwner, type NftAsset, API_BASE_URL } from '@/services/api';
+import { fetchNftByOwner, type NftAsset, API_BASE_URL, notifySolanaPayment } from '@/services/api';
 import { NftCard } from './NftCard';
 import { ListNftModal } from './ListNftModal';
 import { VersionedTransaction } from '@solana/web3.js';
@@ -67,7 +67,7 @@ export const UserNftList = () => {
         try {
             console.log('Listing NFT:', selectedNft.publicKey, 'for', price, 'SOL');
 
-            const response = await fetch(`${API_BASE_URL}list`, {
+            const response = await fetch(`${API_BASE_URL}/list`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -97,6 +97,20 @@ export const UserNftList = () => {
             await connection.confirmTransaction(signature, 'confirmed');
 
             console.log('NFT listed successfully! Signature:', signature);
+
+            // Log the listing transaction to database
+            try {
+                await notifySolanaPayment(
+                    signature,
+                    walletPublicKey.toString(),
+                    price,
+                    selectedNft.publicKey,
+                    'LISTING'
+                );
+                console.log('Listing transaction logged to database');
+            } catch (logError) {
+                console.warn('Failed to log listing transaction:', logError);
+            }
 
             loadingToast.dismiss();
             toast({

@@ -1,0 +1,107 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String        @id @default(uuid())
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  escrows      Escrow[]
+  transactions Transaction[]
+  wallets      Wallet[]
+
+  @@map("users")
+}
+
+model Wallet {
+  id            String   @id @default(uuid())
+  userId        String   @map("user_id")
+  walletAddress String   @unique @map("wallet_address")
+  walletType    String   @map("wallet_type")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  nfts          Nft[]
+  user          User     @relation(fields: [userId], references: [id])
+
+  @@map("wallets")
+}
+
+model Nft {
+  id            String        @id @default(uuid())
+  walletId      String        @map("wallet_id")
+  nftId         String        @unique @map("nft_id")
+  eventId       String?       @map("event_id")
+  badgeId       String?       @map("badge_id")
+  mintTimestamp DateTime      @default(now()) @map("mint_timestamp")
+  metadataUri   String        @map("metadata_uri")
+  name          String
+  escrows       Escrow[]
+  wallet        Wallet        @relation(fields: [walletId], references: [id])
+  transactions  Transaction[]
+
+  @@map("nfts")
+}
+
+model Escrow {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  nftId     String   @map("nft_id")
+  amount    Decimal
+  status    String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  nft       Nft      @relation(fields: [nftId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@map("escrows")
+}
+
+model Transaction {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  amount          Decimal
+  nftId           String?  @map("nft_id")
+  transactionType String   @map("transaction_type") // "MINT", "PAYMENT", "PURCHASE"
+  status          String   // "PENDING", "COMPLETED", "FAILED", "EXPIRED", "CANCELED"
+  transactionId   String   @unique @map("transaction_id") // Coinbase Charge ID or Solana Tx Hash
+  walletAddress   String?  @map("wallet_address") // Payer's wallet address (Solana or EVM)
+  txHash          String?  @map("tx_hash") // On-chain transaction hash/signature
+  currency        String?  // Payment currency (SOL, USDC, ETH, etc.)
+  network         String?  // Network (solana, ethereum, base, etc.)
+  metadata        String?  // JSON string for additional data
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  nft             Nft?     @relation(fields: [nftId], references: [id])
+  user            User     @relation(fields: [userId], references: [id])
+
+  @@index([walletAddress])
+  @@index([status])
+  @@index([transactionType])
+  @@map("transactions")
+}
+
+model PaymentLog {
+  id            String   @id @default(uuid())
+  eventType     String   @map("event_type") // charge:created, charge:confirmed, charge:failed, etc.
+  chargeId      String   @map("charge_id") // Coinbase charge ID
+  chargeCode    String?  @map("charge_code") // Coinbase charge code
+  walletAddress String?  @map("wallet_address") // Payer's wallet address
+  txHash        String?  @map("tx_hash") // On-chain transaction hash
+  amount        Decimal?
+  currency      String?
+  network       String?
+  status        String   // Event status
+  rawPayload    String?  @map("raw_payload") // Full webhook payload as JSON
+  verified      Boolean  @default(false) // Whether signature was verified
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([chargeId])
+  @@index([walletAddress])
+  @@index([eventType])
+  @@map("payment_logs")
+}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
-import { API_BASE_URL } from '@/services/api';
+import { API_BASE_URL, notifySolanaPayment } from '@/services/api';
 import { VersionedTransaction } from '@solana/web3.js';
 import { Buffer } from 'buffer';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -135,7 +135,7 @@ export const MarketplaceList = () => {
         setLoading(true);
         try {
             console.log('🔍 Fetching marketplace listings from escrow accounts');
-            const response = await fetch(`${API_BASE_URL}listings`);
+            const response = await fetch(`${API_BASE_URL}/listings`);
             if (!response.ok) {
                 throw new Error(`Failed to fetch listings: ${response.statusText}`);
             }
@@ -176,7 +176,7 @@ export const MarketplaceList = () => {
             console.log('Buying NFT:', listing.asset, 'for', listing.price, 'SOL');
 
             // Call /buy endpoint for atomic swap
-            const response = await fetch(`${API_BASE_URL}buy`, {
+            const response = await fetch(`${API_BASE_URL}/buy`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -205,6 +205,20 @@ export const MarketplaceList = () => {
             await connection.confirmTransaction(signature, 'confirmed');
 
             console.log('Buy successful, signature:', signature);
+
+            // Log the transaction to database
+            try {
+                await notifySolanaPayment(
+                    signature,
+                    walletPublicKey.toString(),
+                    listing.price,
+                    listing.asset,
+                    'PURCHASE'
+                );
+                console.log('Transaction logged to database');
+            } catch (logError) {
+                console.warn('Failed to log transaction:', logError);
+            }
 
             loadingToast.dismiss();
             toast({

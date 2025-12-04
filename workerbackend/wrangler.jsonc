@@ -1,8 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "workerbackend",
+  "name": "kumele-backend",
   "main": "src/index.ts",
-  "compatibility_date": "2025-11-19",
+  "compatibility_date": "2024-09-23",
   "compatibility_flags": [
     "nodejs_compat"
   ],
@@ -11,8 +11,15 @@
   // - Cloudflare dashboard secrets for production
   // No vars defined here to avoid committing secrets
   "vars": {
-    "SOLANA_RPC_URL": "https://api.devnet.solana.com"
+    "COINBASE_API_KEY_NAME": "29b6eb08-e2e9-4276-9a64-603cab86ab69"
   },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "51d6e914d1a24680a392ea585b7e8539",
+      "localConnectionString": "postgresql://neondb_owner:npg_vt7iwzOL0Efe@ep-patient-credit-a1mtuesi-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+    }
+  ],
   // "kv_namespaces": [
   //   {
   //     "binding": "MY_KV_NAMESPACE",
