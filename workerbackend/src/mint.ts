@@ -54,17 +54,77 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             }
         }
 
-        if (!c.env.SOLANA_RPC_URL) {
-            console.error('SOLANA_RPC_URL is not set')
-            return c.text('Server configuration error: SOLANA_RPC_URL is missing', 500)
-        }
-
-        const umi = getUmi(c.env.SOLANA_RPC_URL)
+        // Use public RPC as fallback
+        let rpcUrl = c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'
+        let umi = getUmi(rpcUrl)
         const ownerKey = publicKey(owner)
         const asset = generateSigner(umi)
-        const assetKey = asset.publicKey.toString();
+        let assetKey = asset.publicKey.toString();
 
-        // Record mint in database
+        const userSigner = {
+            publicKey: ownerKey,
+            signMessage: async (msg: Uint8Array) => msg,
+            signTransaction: async (tx: any) => tx,
+            signAllTransactions: async (txs: any[]) => txs,
+        }
+
+        // Build create instruction with optional collection
+        const createParams: any = {
+            asset,
+            name,
+            uri,
+            owner: ownerKey,
+            authority: userSigner,
+            payer: userSigner,
+        }
+
+        // Add collection if provided
+        if (collection) {
+            createParams.collection = publicKey(collection)
+        }
+
+        let builder = createV1(umi, createParams)
+        let base64Tx: string
+        
+        // Try to build transaction with RPC fallback
+        try {
+            const builderWithBlockhash = await builder
+                .setFeePayer(userSigner)
+                .setLatestBlockhash(umi)
+
+            const tx = await builderWithBlockhash.build(umi)
+            const signedTx = await asset.signTransaction(tx)
+            const serializedTx = umi.transactions.serialize(signedTx)
+            base64Tx = Buffer.from(serializedTx).toString('base64')
+        } catch (rpcError: any) {
+            // If RPC fails, try public devnet RPC
+            if (rpcError.message?.includes('401') || rpcError.message?.includes('Invalid API key') || rpcError.message?.includes('Unauthorized') || rpcError.message?.includes('failed to get recent blockhash')) {
+                console.log('RPC failed in mintNft, trying public devnet RPC...')
+                rpcUrl = 'https://api.devnet.solana.com'
+                umi = getUmi(rpcUrl)
+                
+                // Recreate asset signer with new umi instance
+                const newAsset = generateSigner(umi)
+                assetKey = newAsset.publicKey.toString()
+                
+                // Update createParams with new asset
+                createParams.asset = newAsset
+                
+                builder = createV1(umi, createParams)
+                const builderWithBlockhash = await builder
+                    .setFeePayer(userSigner)
+                    .setLatestBlockhash(umi)
+
+                const tx = await builderWithBlockhash.build(umi)
+                const signedTx = await newAsset.signTransaction(tx)
+                const serializedTx = umi.transactions.serialize(signedTx)
+                base64Tx = Buffer.from(serializedTx).toString('base64')
+            } else {
+                throw rpcError
+            }
+        }
+
+        // Record mint in database (after we know the final asset key)
         const dbConnectionString = getConnectionString(c.env)
         if (dbConnectionString) {
             try {
@@ -137,14 +197,15 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                                     nftId: nft?.id || null,
                                     transactionType: 'MINT',
                                     status: 'COMPLETED',
-                                    walletAddress: walletAddress,
+                                    walletAddress: walletAddress || null,
+                                    txHash: null,
                                     currency: 'SOL',
                                     network: 'solana',
                                     metadata: JSON.stringify({
                                         source: 'wallet_mint',
                                         mintedAt: new Date().toISOString()
                                     })
-                                }
+                                } as any
                             }).catch((e: unknown) => console.log('Transaction creation failed:', e));
                         }
                     } else {
@@ -159,44 +220,9 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             console.warn('Database connection not configured - skipping DB recording')
         }
 
-        const userSigner = {
-            publicKey: ownerKey,
-            signMessage: async (msg: Uint8Array) => msg,
-            signTransaction: async (tx: any) => tx,
-            signAllTransactions: async (txs: any[]) => txs,
-        }
-
-        // Build create instruction with optional collection
-        const createParams: any = {
-            asset,
-            name,
-            uri,
-            owner: ownerKey,
-            authority: userSigner,
-            payer: userSigner,
-        }
-
-        // Add collection if provided
-        if (collection) {
-            createParams.collection = publicKey(collection)
-        }
-
-        const builder = createV1(umi, createParams)
-
-        const builderWithBlockhash = await builder
-            .setFeePayer(userSigner)
-            .setLatestBlockhash(umi)
-
-        const tx = await builderWithBlockhash.build(umi)
-
-        const signedTx = await asset.signTransaction(tx)
-
-        const serializedTx = umi.transactions.serialize(signedTx)
-        const base64Tx = Buffer.from(serializedTx).toString('base64')
-
         return c.json({
             transaction: base64Tx,
-            mint: asset.publicKey.toString()
+            mint: assetKey
         })
 
     } catch (error) {

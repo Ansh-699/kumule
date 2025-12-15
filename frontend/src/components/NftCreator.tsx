@@ -4,8 +4,7 @@ import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { VersionedTransaction } from '@solana/web3.js';
 import { notifySolanaPayment } from '../services/api';
 import { API_BASE_URL, createPayment, getPaymentStatus, checkPaymentStatus, cancelPayment } from '@/services/api';
-import { useUmi } from '@/hooks/useUmi';
-import { createGenericFile } from '@metaplex-foundation/umi';
+import { uploadFilesToR2, uploadMetadataToR2 } from '@/services/api';
 import { Buffer } from 'buffer';
 import { CollectionCreator } from './CollectionCreator';
 import { CollectionNftMinter } from './CollectionNftMinter';
@@ -17,7 +16,6 @@ export const NftCreator = () => {
     const [activeTab, setActiveTab] = useState<Tab>('nft');
     const { publicKey, signTransaction } = useWallet();
     const { connection } = useConnection();
-    const umi = useUmi();
     const [loading, setLoading] = useState(false);
     const [status, setStatus] = useState('');
     const [error, setError] = useState('');
@@ -201,45 +199,15 @@ export const NftCreator = () => {
                 }
             }
 
-            // Step 2: Prepare all files for batch upload (reduces signature requests)
-            setStatus('Preparing files for upload...');
-            console.log('Starting upload...');
-            console.log('Umi Identity:', umi.identity.publicKey.toString());
-            console.log('Wallet Public Key:', publicKey?.toString());
+            // Step 2: Upload files to R2 (free, instant, no signatures needed)
+            setStatus('Uploading files to R2...');
+            console.log('Starting R2 upload...');
 
-            if (umi.identity.publicKey.toString() !== publicKey?.toString()) {
-                throw new Error('Wallet mismatch. Please reconnect.');
-            }
+            // Upload files to R2
+            const uploadResult = await uploadFilesToR2(mainFile, coverFile || null);
+            console.log('R2 upload successful:', uploadResult);
 
-            // Prepare all files in parallel (CPU work, no network)
-            const [mainFileBuffer, coverFileBuffer] = await Promise.all([
-                mainFile.arrayBuffer(),
-                coverFile ? coverFile.arrayBuffer() : Promise.resolve(null)
-            ]);
-
-            const filesToUpload = [
-                createGenericFile(new Uint8Array(mainFileBuffer), mainFile.name, { contentType: mainFile.type })
-            ];
-
-            // Add cover file to batch if it exists
-            if (coverFile && coverFileBuffer) {
-                filesToUpload.push(
-                    createGenericFile(new Uint8Array(coverFileBuffer), coverFile.name, { contentType: coverFile.type })
-                );
-            }
-
-            // Single batch upload for all files (1 signature request instead of 2)
-            setStatus(`Uploading ${filesToUpload.length} file(s) to Irys (1/2)... Please sign once.`);
-            let uploadedUris: string[];
-            try {
-                uploadedUris = await umi.uploader.upload(filesToUpload);
-                console.log('Batch upload successful:', uploadedUris);
-            } catch (uploadErr) {
-                console.error('Upload failed:', uploadErr);
-                throw new Error(`Failed to upload files: ${uploadErr}`);
-            }
-
-            const fileUri = uploadedUris[0];
+            const fileUri = uploadResult.mainFile.url;
             let imageUri = fileUri;
             let animationUri = undefined;
             let category = 'image';
@@ -248,14 +216,14 @@ export const NftCreator = () => {
             if (isMultimedia) {
                 category = mainFile.type.startsWith('video/') ? 'video' : 'audio';
                 animationUri = fileUri;
-                // Cover was uploaded in the same batch
-                if (coverFile && uploadedUris.length > 1) {
-                    imageUri = uploadedUris[1];
+                // Cover was uploaded if provided
+                if (uploadResult.coverFile) {
+                    imageUri = uploadResult.coverFile.url;
                 }
             }
 
-            // Step 3: Upload Metadata (single request)
-            setStatus('Uploading metadata to Irys (2/2)... Please sign.');
+            // Step 3: Upload Metadata to R2
+            setStatus('Uploading metadata to R2...');
             const metadata = {
                 name: formData.name,
                 symbol: formData.symbol,
@@ -265,12 +233,12 @@ export const NftCreator = () => {
                 properties: {
                     files: [
                         { uri: fileUri, type: mainFile.type },
-                        ...(animationUri && imageUri !== fileUri ? [{ uri: imageUri, type: coverFile?.type || 'image/png' }] : [])
+                        ...(animationUri && imageUri !== fileUri && uploadResult.coverFile ? [{ uri: imageUri, type: uploadResult.coverFile.contentType }] : [])
                     ],
                     category
                 }
             };
-            const metadataUri = await umi.uploader.uploadJson(metadata);
+            const { url: metadataUri } = await uploadMetadataToR2(metadata);
 
             // Step 4: Mint NFT
             setStatus('Building mint transaction...');

@@ -581,25 +581,26 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                     })
 
                     // Record the purchase transaction
-                    await prisma.transaction.create({
-                        data: {
-                            transactionId: `buy_${assetId}_${Date.now()}`,
-                            userId: buyerUserId,
-                            amount: priceInSol,
-                            nftId: nft?.id || null,
-                            transactionType: 'PURCHASE',
-                            status: 'PENDING', // Will be COMPLETED after on-chain confirmation
-                            walletAddress: buyer,
-                            currency: 'SOL',
-                            network: 'solana',
-                            metadata: JSON.stringify({
-                                source: 'escrow_purchase',
-                                assetId: assetId,
-                                seller: seller,
-                                price: priceInSol
+                            await prisma.transaction.create({
+                                data: {
+                                    transactionId: `buy_${assetId}_${Date.now()}`,
+                                    userId: buyerUserId,
+                                    amount: priceInSol,
+                                    nftId: nft?.id || null,
+                                    transactionType: 'PURCHASE',
+                                    status: 'PENDING', // Will be COMPLETED after on-chain confirmation
+                                    walletAddress: buyer,
+                                    txHash: null,
+                                    currency: 'SOL',
+                                    network: 'solana',
+                                    metadata: JSON.stringify({
+                                        source: 'escrow_purchase',
+                                        assetId: assetId,
+                                        seller: seller,
+                                        price: priceInSol
+                                    })
+                                } as any
                             })
-                        }
-                    })
                     console.log('Buy DB: Transaction recorded')
                 })
             } catch (e) {
@@ -766,10 +767,12 @@ export const adminResolveEscrow = async (c: Context<{ Bindings: CloudflareBindin
 
         // Build instruction data: discriminator + refund_buyer (bool = 1 byte)
         const refundBuyerByte = refundBuyer ? 1 : 0
+        const discriminator = getIDL().instructions[5].discriminator
+        const discriminatorArray = Array.isArray(discriminator) ? discriminator : Array.from(discriminator)
         const instructionData = Buffer.concat([
-            Buffer.from(getIDL().instructions[5].discriminator), // admin_resolve discriminator
-            Buffer.from([refundBuyerByte])
-        ])
+            Buffer.from(discriminatorArray as number[]) as any,
+            Buffer.from([refundBuyerByte]) as any
+        ]) as Buffer
 
         const adminResolveIx = new TransactionInstruction({
             programId: getEscrowProgramId(),

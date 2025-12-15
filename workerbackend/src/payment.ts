@@ -31,13 +31,14 @@ async function logTransaction(
                     transactionType: 'PAYMENT',
                     status: 'PENDING',
                     walletAddress: walletAddress || null,
+                    txHash: null,
                     currency: currency,
                     network: network || null,
                     metadata: JSON.stringify({
                         source: 'charge_created',
                         createdAt: new Date().toISOString()
                     })
-                }
+                } as any
             })
             console.log(`[Payment] Logged pending transaction: ${chargeId}`)
         })
@@ -317,55 +318,43 @@ export const checkPaymentStatus = async (c: Context<{ Bindings: CloudflareBindin
                             
                             const walletAddress = payment?.payer_addresses?.[0] || 
                                                  payment?.from_address || 
-                                                 existingTx.walletAddress
+                                                 (existingTx as any).walletAddress
                             
                             const txHash = payment?.transaction_id || 
                                          payment?.tx_hash || 
-                                         existingTx.txHash
+                                         (existingTx as any).txHash
                             
                             const currency = payment?.value?.currency || 
                                            result.code?.split('_')[1]?.toUpperCase() || 
-                                           existingTx.currency || 'USD'
+                                           (existingTx as any).currency || 'USD'
                             
-                            const network = payment?.network || existingTx.network
+                            const network = payment?.network || (existingTx as any).network
                             
                             // Update transaction
                             await prisma.transaction.update({
                                 where: { transactionId: chargeId },
                                 data: {
                                     status: transactionStatus,
-                                    walletAddress: walletAddress || existingTx.walletAddress,
-                                    txHash: txHash || existingTx.txHash,
-                                    currency: currency || existingTx.currency,
-                                    network: network || existingTx.network,
+                                    walletAddress: walletAddress || (existingTx as any).walletAddress || null,
+                                    txHash: txHash || (existingTx as any).txHash || null,
+                                    currency: currency || (existingTx as any).currency || null,
+                                    network: network || (existingTx as any).network || null,
                                     metadata: JSON.stringify({
-                                        ...(existingTx.metadata ? (typeof existingTx.metadata === 'string' ? JSON.parse(existingTx.metadata) : existingTx.metadata) : {}),
+                                        ...((existingTx as any).metadata ? (typeof (existingTx as any).metadata === 'string' ? JSON.parse((existingTx as any).metadata) : (existingTx as any).metadata) : {}),
                                         lastChecked: new Date().toISOString(),
                                         coinbaseStatus: result.status,
                                         timeline: result.timeline || []
                                     })
-                                }
+                                } as any
                             })
                             
                             console.log(`[Payment Check] Updated transaction ${chargeId} from ${existingTx.status} to ${transactionStatus}`)
                             
                             // Also log as payment event if status changed to COMPLETED
+                            // Note: PaymentLog model removed, logging handled via transaction metadata
                             if (transactionStatus === 'COMPLETED' && existingTx.status !== 'COMPLETED') {
-                                await prisma.paymentLog.create({
-                                    data: {
-                                        eventType: 'charge:confirmed',
-                                        chargeId: chargeId,
-                                        chargeCode: result.code,
-                                        walletAddress: walletAddress,
-                                        txHash: txHash,
-                                        amount: existingTx.amount,
-                                        currency: currency,
-                                        network: network,
-                                        status: 'COMPLETED',
-                                        rawPayload: JSON.stringify(result),
-                                        verified: !result.isDemo
-                                    }
-                                })
+                                // Logging handled via transaction metadata update above
+                                console.log(`[Payment Log] Charge ${chargeId} confirmed with code ${result.code}`)
                             }
                         }
                     } else {
@@ -402,7 +391,7 @@ export const checkPaymentStatus = async (c: Context<{ Bindings: CloudflareBindin
                                     timeline: result.timeline || [],
                                     chargeCode: result.code
                                 })
-                            }
+                            } as any
                         })
                         
                         console.log(`[Payment Check] Created new transaction for ${chargeId}`)
@@ -495,48 +484,29 @@ export const cancelPayment = async (c: Context<{ Bindings: CloudflareBindings }>
                                 data: {
                                     status: 'CANCELED',
                                     metadata: JSON.stringify({
-                                        ...(existingTx.metadata ? (typeof existingTx.metadata === 'string' ? JSON.parse(existingTx.metadata) : existingTx.metadata) : {}),
+                                        ...((existingTx as any).metadata ? (typeof (existingTx as any).metadata === 'string' ? JSON.parse((existingTx as any).metadata) : (existingTx as any).metadata) : {}),
                                         canceledAt: new Date().toISOString(),
                                         reason: 'Payment window closed by user',
                                         canceledBy: 'user'
                                     })
-                                }
+                                } as any
                             })
                             
                             console.log(`[Payment Cancel] Marked transaction ${chargeId} as CANCELED (window closed)`)
                             
-                            // Log cancellation event
-                            await prisma.paymentLog.create({
-                                data: {
-                                    eventType: 'charge:canceled',
-                                    chargeId: chargeId,
-                                    chargeCode: existingTx.metadata ? (() => {
-                                        try {
-                                            const meta = typeof existingTx.metadata === 'string' 
-                                                ? JSON.parse(existingTx.metadata) 
-                                                : existingTx.metadata
-                                            return meta.chargeCode || null
-                                        } catch {
-                                            return null
-                                        }
-                                    })() : null,
-                                    walletAddress: existingTx.walletAddress,
-                                    amount: existingTx.amount,
-                                    currency: existingTx.currency,
-                                    network: existingTx.network,
-                                    status: 'CANCELED',
-                                    rawPayload: JSON.stringify({
-                                        reason: 'Payment window closed by user',
-                                        canceledAt: new Date().toISOString(),
-                                        originalTransaction: {
-                                            amount: existingTx.amount,
-                                            currency: existingTx.currency,
-                                            network: existingTx.network
-                                        }
-                                    }),
-                                    verified: false
+                            // Log cancellation event (handled via transaction metadata update above)
+                            const chargeCode = (existingTx as any).metadata ? (() => {
+                                try {
+                                    const meta = typeof (existingTx as any).metadata === 'string' 
+                                        ? JSON.parse((existingTx as any).metadata) 
+                                        : (existingTx as any).metadata
+                                    return meta.chargeCode || null
+                                } catch {
+                                    return null
                                 }
-                            })
+                            })() : null
+                            
+                            console.log(`[Payment Log] Charge ${chargeId} canceled with code ${chargeCode}`)
                         } else {
                             console.log(`[Payment Cancel] Transaction ${chargeId} already has status ${existingTx.status}, not updating`)
                         }

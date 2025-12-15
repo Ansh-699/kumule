@@ -11,8 +11,10 @@ declare namespace Cloudflare {
         COINBASE_API_KEY_PRIVATE_KEY: string;
         COINBASE_COMMERCE_API_KEY: string;
         DATABASE_URL: string;
+        PUBLIC_URL?: string; // Public base URL for metadata/image URLs (e.g., https://your-worker.workers.dev or https://your-domain.com)
         COINBASE_WEBHOOK_SECRET: string;
         HYPERDRIVE: Hyperdrive;
+        NFT_IMAGES: R2Bucket; // R2 bucket for NFT images and metadata
     }
 }
 interface CloudflareBindings extends Cloudflare.Env { }

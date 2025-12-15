@@ -29,17 +29,27 @@ app.get('/test', (c) => {
 // CORS middleware with explicit origin handling
 app.use('*', async (c, next) => {
   const origin = c.req.header('origin')
+  const corsHeaders: Record<string, string> = {}
+  
   if (origin) {
-    c.header('Access-Control-Allow-Origin', origin)
-    c.header('Access-Control-Allow-Credentials', 'true')
+    corsHeaders['Access-Control-Allow-Origin'] = origin
+    corsHeaders['Access-Control-Allow-Credentials'] = 'true'
   } else {
-    c.header('Access-Control-Allow-Origin', '*')
+    corsHeaders['Access-Control-Allow-Origin'] = '*'
   }
-  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-  c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Admin-API-Key')
+  corsHeaders['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+  corsHeaders['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Admin-API-Key'
+  
+  // Set headers for all responses
+  Object.entries(corsHeaders).forEach(([key, value]) => {
+    c.header(key, value)
+  })
   
   if (c.req.method === 'OPTIONS') {
-    return c.text('', 204)
+    return new Response(null, { 
+      status: 204,
+      headers: corsHeaders
+    })
   }
   
   await next()
@@ -126,6 +136,14 @@ app.post('/api/admin/rewards/drafts', adminAuth, createRewardDraft)
 app.get('/api/admin/rewards/drafts', adminAuth, getAllRewardDrafts)
 app.put('/api/admin/rewards/drafts/:id', adminAuth, updateRewardDraft)
 app.delete('/api/admin/rewards/drafts/:id', adminAuth, deleteRewardDraft)
+
+// R2 Upload routes (for admin reward NFT minting and marketplace)
+import { uploadImageToR2, uploadFilesToR2, uploadMetadataToR2, serveImageFromR2, serveMetadataFromR2 } from './upload'
+app.post('/api/upload/image', uploadImageToR2) // Public (no auth needed for marketplace)
+app.post('/api/upload/files', uploadFilesToR2) // Public (for main + cover files)
+app.post('/api/upload/metadata', uploadMetadataToR2) // Public (no auth needed for marketplace)
+app.get('/cdn/images/:filename', serveImageFromR2)
+app.get('/cdn/metadata/:filename', serveMetadataFromR2)
 
 // Simple DB debug route: runs a trivial Prisma query
 app.get('/debug/db', async (c) => {

@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useUmi } from '@/hooks/useUmi';
-import { createGenericFile, generateSigner } from '@metaplex-foundation/umi';
+import { generateSigner } from '@metaplex-foundation/umi';
 import { createCollection } from '@metaplex-foundation/mpl-core';
+import { uploadImageToR2, uploadMetadataToR2 } from '@/services/api';
 
 export const CollectionCreator = () => {
     const { publicKey } = useWallet();
@@ -51,15 +52,13 @@ export const CollectionCreator = () => {
         setCreatedCollection(null);
 
         try {
-            // 1. Upload Collection Image
-            setStatus('Uploading collection image to Irys (1/2)... Please sign.');
-            const buffer = await imageFile.arrayBuffer();
-            const file = createGenericFile(new Uint8Array(buffer), imageFile.name, { contentType: imageFile.type });
-            const [imageUri] = await umi.uploader.upload([file]);
+            // 1. Upload Collection Image to R2 (free, instant, no signatures needed)
+            setStatus('Uploading collection image to R2...');
+            const { url: imageUri } = await uploadImageToR2(imageFile);
             console.log('Collection Image uploaded:', imageUri);
 
-            // 2. Upload Collection Metadata
-            setStatus('Uploading collection metadata to Irys (2/2)... Please sign.');
+            // 2. Upload Collection Metadata to R2
+            setStatus('Uploading collection metadata to R2...');
             const metadata = {
                 name: formData.name,
                 symbol: formData.symbol,
@@ -67,7 +66,7 @@ export const CollectionCreator = () => {
                 image: imageUri,
                 external_url: formData.externalUrl || undefined,
             };
-            const metadataUri = await umi.uploader.uploadJson(metadata);
+            const { url: metadataUri } = await uploadMetadataToR2(metadata);
             console.log('Collection Metadata uploaded:', metadataUri);
 
             // 3. Create Collection On-Chain

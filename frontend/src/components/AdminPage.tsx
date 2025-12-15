@@ -6,7 +6,7 @@ const ADMIN_PASSWORD = 'anshtyagi';
 
 export const AdminPage = () => {
     const [isAuthenticated, setIsAuthenticated] = useState(false);
-    const [apiKey, setApiKey] = useState<string>('admin-secret-key-change-in-production');
+    const apiKey = 'admin-secret-key-change-in-production';
 
     useEffect(() => {
         // Check if user is already authenticated

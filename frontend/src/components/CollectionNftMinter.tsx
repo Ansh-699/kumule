@@ -4,9 +4,10 @@ import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { VersionedTransaction } from '@solana/web3.js';
 import { API_BASE_URL } from '@/services/api';
 import { useUmi } from '@/hooks/useUmi';
-import { createGenericFile, publicKey as umiPublicKey } from '@metaplex-foundation/umi';
+import { publicKey as umiPublicKey } from '@metaplex-foundation/umi';
 import { fetchCollectionV1 } from '@metaplex-foundation/mpl-core';
 import { Buffer } from 'buffer';
+import { uploadFilesToR2, uploadMetadataToR2 } from '@/services/api';
 
 export const CollectionNftMinter = () => {
     const { publicKey, signTransaction } = useWallet();
@@ -95,32 +96,14 @@ export const CollectionNftMinter = () => {
         setCreatedNft(null);
 
         try {
-            // 1. Prepare all files for batch upload (reduces signature requests)
-            setStatus('Preparing files for upload...');
+            // 1. Upload files to R2 (free, instant, no signatures needed)
+            setStatus('Uploading files to R2...');
             
-            // Prepare all files in parallel (CPU work, no network)
-            const [mainFileBuffer, coverFileBuffer] = await Promise.all([
-                mainFile.arrayBuffer(),
-                coverFile ? coverFile.arrayBuffer() : Promise.resolve(null)
-            ]);
+            // Upload files to R2
+            const uploadResult = await uploadFilesToR2(mainFile, coverFile || null);
+            console.log('R2 upload successful:', uploadResult);
 
-            const filesToUpload = [
-                createGenericFile(new Uint8Array(mainFileBuffer), mainFile.name, { contentType: mainFile.type })
-            ];
-
-            // Add cover file to batch if it exists
-            if (coverFile && coverFileBuffer) {
-                filesToUpload.push(
-                    createGenericFile(new Uint8Array(coverFileBuffer), coverFile.name, { contentType: coverFile.type })
-                );
-            }
-
-            // Single batch upload for all files (1 signature request instead of 2)
-            setStatus(`Uploading ${filesToUpload.length} file(s) to Irys (1/2)... Please sign once.`);
-            const uploadedUris = await umi.uploader.upload(filesToUpload);
-            console.log('Batch upload successful:', uploadedUris);
-
-            const fileUri = uploadedUris[0];
+            const fileUri = uploadResult.mainFile.url;
             let imageUri = fileUri;
             let animationUri = undefined;
             let category = 'image';
@@ -129,14 +112,14 @@ export const CollectionNftMinter = () => {
             if (isMultimedia) {
                 category = mainFile.type.startsWith('video/') ? 'video' : 'audio';
                 animationUri = fileUri;
-                // Cover was uploaded in the same batch
-                if (coverFile && uploadedUris.length > 1) {
-                    imageUri = uploadedUris[1];
+                // Cover was uploaded if provided
+                if (uploadResult.coverFile) {
+                    imageUri = uploadResult.coverFile.url;
                 }
             }
 
-            // 2. Upload Metadata (single request)
-            setStatus('Uploading metadata to Irys (2/2)... Please sign.');
+            // 2. Upload Metadata to R2
+            setStatus('Uploading metadata to R2...');
             const metadata = {
                 name: formData.name,
                 symbol: formData.symbol,
@@ -146,12 +129,12 @@ export const CollectionNftMinter = () => {
                 properties: {
                     files: [
                         { uri: fileUri, type: mainFile.type },
-                        ...(animationUri && imageUri !== fileUri ? [{ uri: imageUri, type: coverFile?.type || 'image/png' }] : [])
+                        ...(animationUri && imageUri !== fileUri && uploadResult.coverFile ? [{ uri: imageUri, type: uploadResult.coverFile.contentType }] : [])
                     ],
                     category
                 }
             };
-            const metadataUri = await umi.uploader.uploadJson(metadata);
+            const { url: metadataUri } = await uploadMetadataToR2(metadata);
             console.log('Metadata Uploaded:', metadataUri);
 
             // 3. Mint NFT into Collection

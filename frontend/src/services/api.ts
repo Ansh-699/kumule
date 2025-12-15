@@ -2,6 +2,76 @@
 // Make sure this port matches the one shown in your worker dev logs.
 export const API_BASE_URL = 'http://localhost:8787'; // Production Worker URL https://kumele-backend.ansht.workers.dev
 
+// Upload image to R2 (for admin reward NFT minting and marketplace)
+export const uploadImageToR2 = async (file: File, apiKey?: string): Promise<{ url: string; filename: string }> => {
+    const formData = new FormData()
+    formData.append('image', file)
+
+    const url = apiKey 
+        ? `${API_BASE_URL}/api/upload/image?apiKey=${apiKey}`
+        : `${API_BASE_URL}/api/upload/image`
+
+    const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+    })
+
+    if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to upload image')
+    }
+
+    const data = await response.json()
+    return { url: data.url, filename: data.filename }
+}
+
+// Upload multiple files to R2 (main file + optional cover file)
+export const uploadFilesToR2 = async (mainFile: File, coverFile?: File | null): Promise<{ files: Array<{ url: string; contentType: string }>, mainFile: { url: string; contentType: string }, coverFile: { url: string; contentType: string } | null }> => {
+    const formData = new FormData()
+    formData.append('mainFile', mainFile)
+    if (coverFile) {
+        formData.append('coverFile', coverFile)
+    }
+
+    const response = await fetch(`${API_BASE_URL}/api/upload/files`, {
+        method: 'POST',
+        body: formData,
+    })
+
+    if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to upload files')
+    }
+
+    const data = await response.json()
+    return {
+        files: data.files,
+        mainFile: data.mainFile,
+        coverFile: data.coverFile
+    }
+}
+
+// Upload metadata to R2 (for admin reward NFT minting and marketplace)
+export const uploadMetadataToR2 = async (metadata: any, apiKey?: string, filename?: string): Promise<{ url: string }> => {
+    const url = apiKey 
+        ? `${API_BASE_URL}/api/upload/metadata?apiKey=${apiKey}`
+        : `${API_BASE_URL}/api/upload/metadata`
+
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ metadata, filename }),
+    })
+
+    if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to upload metadata')
+    }
+
+    const data = await response.json()
+    return { url: data.url }
+}
+
 export const createPayment = async (amount: number, currency: string = 'USDC') => {
     const response = await fetch(`${API_BASE_URL}/api/payment/create`, {
         method: 'POST',

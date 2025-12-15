@@ -3,17 +3,16 @@ import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { SystemProgram, PublicKey, LAMPORTS_PER_SOL, Transaction, VersionedTransaction, Connection } from '@solana/web3.js';
 import { Buffer } from 'buffer';
-import { useUmi } from '@/hooks/useUmi';
-import { createGenericFile } from '@metaplex-foundation/umi';
+// Removed unused imports: useUmi, createGenericFile
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { API_BASE_URL } from '@/services/api';
+import { API_BASE_URL, uploadImageToR2, uploadMetadataToR2 } from '@/services/api';
 import { useToast } from '@/components/ui/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Check, X, RefreshCw, LogOut, Users, Image, AlertTriangle, ArrowLeftRight, Wallet, Eye, ExternalLink, Copy, MoreVertical, Info, Gift, Plus, Trash2, Edit, Pencil } from 'lucide-react';
+import { Check, X, RefreshCw, LogOut, Users, Image, AlertTriangle, ArrowLeftRight, Wallet, Eye, ExternalLink, Copy, MoreVertical, Info, Gift, Plus, Trash2, Pencil } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Badge } from '@/components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -75,7 +74,6 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
     const { toast } = useToast();
     const { publicKey, signTransaction, connected } = useWallet();
     const { connection } = useConnection();
-    const umi = useUmi();
 
     const fetchDashboard = async () => {
         setLoading(true);
@@ -1071,12 +1069,12 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                             ) : rewardDrafts.length === 0 ? (
                                 <p className="text-gray-500 text-center py-8">No drafts yet. Upload image and metadata to create drafts!</p>
                             ) : (
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-4">
                                     {rewardDrafts.map((draft) => (
-                                        <Card key={draft.id} className="border border-gray-200 hover:shadow-md transition-shadow">
+                                        <Card key={draft.id} className="border border-gray-200 hover:shadow-md transition-shadow max-w-xs">
                                             <CardContent className="p-4">
                                                 {draft.imageUrl && (
-                                                    <div className="w-full h-32 overflow-hidden rounded-lg border border-gray-200 mb-3">
+                                                    <div className="w-full h-48 overflow-hidden rounded-lg border border-gray-200 mb-3">
                                                         <img 
                                                             src={draft.imageUrl} 
                                                             alt={draft.name}
@@ -1214,12 +1212,12 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                             ) : rewardNfts.length === 0 ? (
                                 <p className="text-gray-500 text-center py-8">No reward NFTs found. Mint one to get started!</p>
                             ) : (
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-4">
                                     {rewardNfts.map((reward) => (
-                                        <Card key={reward.id} className="border border-gray-200 hover:shadow-md transition-shadow">
+                                        <Card key={reward.id} className="border border-gray-200 hover:shadow-md transition-shadow max-w-xs">
                                             <CardContent className="p-4">
                                                 {reward.imageUrl && (
-                                                    <div className="w-full h-32 overflow-hidden rounded-lg border border-gray-200 mb-3">
+                                                    <div className="w-full h-48 overflow-hidden rounded-lg border border-gray-200 mb-3">
                                                         <img 
                                                             src={reward.imageUrl} 
                                                             alt={reward.name}
@@ -1565,23 +1563,16 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
 
                                     setUploadingFiles(true);
                                     try {
-                                        // Upload image to Irys
-                                        const imageBuffer = await imageFile.arrayBuffer();
-                                        const imageGenericFile = createGenericFile(
-                                            new Uint8Array(imageBuffer),
-                                            imageFile.name,
-                                            { contentType: imageFile.type }
-                                        );
-                                        
+                                        // Upload image to R2 (free, instant, no signatures needed)
                                         toast({
                                             title: "Uploading",
-                                            description: "Uploading image to Irys... Please sign.",
+                                            description: "Uploading image to R2...",
                                         });
                                         
-                                        const [imageUri] = await umi.uploader.upload([imageGenericFile]);
+                                        const { url: imageUri } = await uploadImageToR2(imageFile, apiKey);
                                         setUploadedImageUri(imageUri);
 
-                                        // Upload metadata to Irys
+                                        // Upload metadata to R2
                                         const metadata = {
                                             name: rewardFormData.name,
                                             description: rewardFormData.description || '',
@@ -1594,10 +1585,10 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                         
                                         toast({
                                             title: "Uploading",
-                                            description: "Uploading metadata to Irys... Please sign.",
+                                            description: "Uploading metadata to R2...",
                                         });
                                         
-                                        const metadataUri = await umi.uploader.uploadJson(metadata);
+                                        const { url: metadataUri } = await uploadMetadataToR2(metadata, apiKey);
                                         setUploadedMetadataUri(metadataUri);
 
                                         // Save as draft
