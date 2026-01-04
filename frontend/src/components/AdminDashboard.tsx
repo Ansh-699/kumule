@@ -17,6 +17,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { Badge } from '@/components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Input } from '@/components/ui/input';
+import { AdminEventsPanel } from './AdminEventsPanel';
 
 interface DashboardData {
     users: any[];
@@ -144,7 +145,7 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
     // Fetch NFT metadata for all NFTs
     useEffect(() => {
         if (!data?.nfts) return;
-        
+
         const fetchAllMetadata = async () => {
             const metadataMap: Record<string, any> = {};
             await Promise.all(
@@ -162,7 +163,7 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
             );
             setNftMetadata(metadataMap);
         };
-        
+
         fetchAllMetadata();
     }, [data?.nfts]);
 
@@ -204,11 +205,11 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
         try {
             // Validate and clean wallet address
             let walletAddress = selectedDispute.walletAddress.trim();
-            
+
             // Remove any invalid characters
             const base58Chars = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
             const invalidChars = walletAddress.split('').filter((char: string) => !base58Chars.includes(char));
-            
+
             if (invalidChars.length > 0) {
                 throw new Error(`Invalid characters in wallet address: ${invalidChars.join(', ')}. Solana addresses only use base58 characters (no 0, O, I, l).`);
             }
@@ -287,13 +288,13 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
         } catch (error: any) {
             console.error('Error transferring SOL:', error);
             let errorMessage = 'Failed to transfer SOL. Please try again.';
-            
+
             if (error.message) {
                 errorMessage = error.message;
             } else if (typeof error === 'string') {
                 errorMessage = error;
             }
-            
+
             toast({
                 variant: "destructive",
                 title: "Transfer Failed",
@@ -558,16 +559,16 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                     <TableCell className="text-gray-700">{Number(dispute.amount).toFixed(4)}</TableCell>
                                                     <TableCell className="max-w-xs truncate text-gray-700">{dispute.reason}</TableCell>
                                                     <TableCell>
-                                                        <Badge 
+                                                        <Badge
                                                             variant={
                                                                 dispute.status === 'PENDING' ? 'outline' :
-                                                                dispute.status === 'APPROVED' ? 'default' :
-                                                                'destructive'
+                                                                    dispute.status === 'APPROVED' ? 'default' :
+                                                                        'destructive'
                                                             }
                                                             className={
                                                                 dispute.status === 'PENDING' ? 'bg-amber-50 text-amber-700 border-amber-300' :
-                                                                dispute.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' :
-                                                                'bg-red-50 text-red-700 border-red-300'
+                                                                    dispute.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' :
+                                                                        'bg-red-50 text-red-700 border-red-300'
                                                             }
                                                         >
                                                             {dispute.status}
@@ -594,7 +595,7 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                                 {dispute.status === 'PENDING' && (
                                                                     <>
                                                                         <DropdownMenuSeparator />
-                                                                        <DropdownMenuItem 
+                                                                        <DropdownMenuItem
                                                                             onClick={() => handleResolveDispute(dispute.id, 'APPROVED')}
                                                                             disabled={resolvingDispute === dispute.id || !connected}
                                                                             className="text-emerald-600"
@@ -602,7 +603,7 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                                             <Check className="h-4 w-4 mr-2" />
                                                                             Approve & Transfer
                                                                         </DropdownMenuItem>
-                                                                        <DropdownMenuItem 
+                                                                        <DropdownMenuItem
                                                                             onClick={() => handleResolveDispute(dispute.id, 'REJECTED')}
                                                                             disabled={resolvingDispute === dispute.id}
                                                                             className="text-red-600"
@@ -672,8 +673,8 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                     </TableHeader>
                                     <TableBody>
                                         {data.users.map((user) => (
-                                            <TableRow 
-                                                key={user.id} 
+                                            <TableRow
+                                                key={user.id}
                                                 className="border-gray-200 hover:bg-gray-50 cursor-pointer"
                                                 onClick={() => {
                                                     setSelectedUser(user);
@@ -747,16 +748,16 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                 <TableCell className="text-gray-700">{tx.transactionType}</TableCell>
                                                 <TableCell className="text-gray-700">{Number(tx.amount).toFixed(4)} {tx.currency || 'SOL'}</TableCell>
                                                 <TableCell>
-                                                    <Badge 
+                                                    <Badge
                                                         variant={
                                                             tx.status === 'COMPLETED' ? 'default' :
-                                                            tx.status === 'PENDING' ? 'outline' :
-                                                            'destructive'
+                                                                tx.status === 'PENDING' ? 'outline' :
+                                                                    'destructive'
                                                         }
                                                         className={
                                                             tx.status === 'COMPLETED' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' :
-                                                            tx.status === 'PENDING' ? 'bg-amber-50 text-amber-700 border-amber-300' :
-                                                            'bg-red-50 text-red-700 border-red-300'
+                                                                tx.status === 'PENDING' ? 'bg-amber-50 text-amber-700 border-amber-300' :
+                                                                    'bg-red-50 text-red-700 border-red-300'
                                                         }
                                                     >
                                                         {tx.status}
@@ -865,8 +866,8 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                             <PopoverTrigger asChild>
                                                                 <div className="cursor-pointer">
                                                                     {imageUrl ? (
-                                                                        <img 
-                                                                            src={imageUrl} 
+                                                                        <img
+                                                                            src={imageUrl}
                                                                             alt={nft.name}
                                                                             className="w-12 h-12 object-cover rounded border border-gray-200 hover:border-gray-300 transition-colors"
                                                                             onError={(e) => {
@@ -883,8 +884,8 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                             <PopoverContent className="w-80">
                                                                 <div className="space-y-3">
                                                                     {imageUrl && (
-                                                                        <img 
-                                                                            src={imageUrl} 
+                                                                        <img
+                                                                            src={imageUrl}
                                                                             alt={nft.name}
                                                                             className="w-full h-48 object-cover rounded border border-gray-200"
                                                                         />
@@ -1001,53 +1002,7 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
 
                 {/* Events Tab */}
                 <TabsContent value="events" className="space-y-4">
-                    <Card className="border border-gray-200 shadow-sm">
-                        <CardHeader>
-                            <CardTitle className="text-gray-900">Events</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            {data.events.length === 0 ? (
-                                <p className="text-gray-500 text-center py-8">No events found</p>
-                            ) : (
-                                <div className="overflow-x-auto">
-                                    <Table>
-                                        <TableHeader>
-                                            <TableRow className="border-gray-200 hover:bg-gray-50">
-                                                <TableHead className="text-gray-600">Name</TableHead>
-                                                <TableHead className="text-gray-600">Entry Fee</TableHead>
-                                                <TableHead className="text-gray-600">Status</TableHead>
-                                                <TableHead className="text-gray-600">Entries</TableHead>
-                                                <TableHead className="text-gray-600">Created</TableHead>
-                                            </TableRow>
-                                        </TableHeader>
-                                        <TableBody>
-                                            {data.events.map((event) => (
-                                                <TableRow key={event.id} className="border-gray-200 hover:bg-gray-50">
-                                                    <TableCell className="text-gray-700 font-medium">{event.name}</TableCell>
-                                                    <TableCell className="text-gray-700">{Number(event.entryFee).toFixed(4)} SOL</TableCell>
-                                                    <TableCell>
-                                                        <Badge variant="outline" className={
-                                                            event.status === 'ACTIVE' ? 'bg-blue-50 text-blue-700 border-blue-300' :
-                                                            event.status === 'COMPLETED' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' :
-                                                            'bg-gray-50 text-gray-700 border-gray-300'
-                                                        }>
-                                                            {event.status}
-                                                        </Badge>
-                                                    </TableCell>
-                                                    <TableCell>
-                                                        <Badge variant="outline" className="bg-gray-50">
-                                                            {event.entries.length} entries
-                                                        </Badge>
-                                                    </TableCell>
-                                                    <TableCell className="text-xs text-gray-500">{new Date(event.createdAt).toLocaleDateString()}</TableCell>
-                                                </TableRow>
-                                            ))}
-                                        </TableBody>
-                                    </Table>
-                                </div>
-                            )}
-                        </CardContent>
-                    </Card>
+                    <AdminEventsPanel />
                 </TabsContent>
 
                 {/* Rewards Tab */}
@@ -1075,8 +1030,8 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                             <CardContent className="p-4">
                                                 {draft.imageUrl && (
                                                     <div className="w-full h-48 overflow-hidden rounded-lg border border-gray-200 mb-3">
-                                                        <img 
-                                                            src={draft.imageUrl} 
+                                                        <img
+                                                            src={draft.imageUrl}
                                                             alt={draft.name}
                                                             className="w-full h-full object-cover"
                                                         />
@@ -1218,8 +1173,8 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                             <CardContent className="p-4">
                                                 {reward.imageUrl && (
                                                     <div className="w-full h-48 overflow-hidden rounded-lg border border-gray-200 mb-3">
-                                                        <img 
-                                                            src={reward.imageUrl} 
+                                                        <img
+                                                            src={reward.imageUrl}
                                                             alt={reward.name}
                                                             className="w-full h-full object-cover"
                                                             onError={(e) => {
@@ -1235,7 +1190,7 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                     </Badge>
                                                 </div>
                                                 <p className="text-xs text-gray-600 mb-2 line-clamp-2">{reward.description || 'No description'}</p>
-                                                
+
                                                 <div className="space-y-1 mb-3 text-xs">
                                                     <div className="flex items-center justify-between">
                                                         <span className="text-gray-600">Points:</span>
@@ -1251,17 +1206,15 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                     </div>
                                                     <div className="flex items-center justify-between">
                                                         <span className="text-gray-600">Claimed:</span>
-                                                        <span className={`font-medium ${
-                                                            reward.claimedCount >= reward.totalSupply ? 'text-red-600' : 'text-gray-900'
-                                                        }`}>
+                                                        <span className={`font-medium ${reward.claimedCount >= reward.totalSupply ? 'text-red-600' : 'text-gray-900'
+                                                            }`}>
                                                             {reward.claimedCount || 0}
                                                         </span>
                                                     </div>
                                                     <div className="flex items-center justify-between">
                                                         <span className="text-gray-600">Available:</span>
-                                                        <span className={`font-medium ${
-                                                            (reward.totalSupply - (reward.claimedCount || 0)) <= 0 ? 'text-red-600' : 'text-gray-900'
-                                                        }`}>
+                                                        <span className={`font-medium ${(reward.totalSupply - (reward.claimedCount || 0)) <= 0 ? 'text-red-600' : 'text-gray-900'
+                                                            }`}>
                                                             {reward.totalSupply - (reward.claimedCount || 0)}
                                                         </span>
                                                     </div>
@@ -1339,7 +1292,7 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                         <Trash2 className="h-3 w-3" />
                                                     </Button>
                                                 </div>
-                                                
+
                                                 <div className="mt-2 pt-2 border-t border-gray-200">
                                                     <Button
                                                         variant="ghost"
@@ -1568,7 +1521,7 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                             title: "Uploading",
                                             description: "Uploading image to R2...",
                                         });
-                                        
+
                                         const { url: imageUri } = await uploadImageToR2(imageFile, apiKey);
                                         setUploadedImageUri(imageUri);
 
@@ -1582,12 +1535,12 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                 requiredPoints: parseInt(rewardFormData.requiredPoints)
                                             }
                                         };
-                                        
+
                                         toast({
                                             title: "Uploading",
                                             description: "Uploading metadata to R2...",
                                         });
-                                        
+
                                         const { url: metadataUri } = await uploadMetadataToR2(metadata, apiKey);
                                         setUploadedMetadataUri(metadataUri);
 
@@ -1653,8 +1606,8 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                     {uploadedImageUri && uploadedMetadataUri ? (
                                         <div className="space-y-4">
                                             <div className="aspect-square w-full overflow-hidden rounded-lg border border-gray-200">
-                                                <img 
-                                                    src={uploadedImageUri} 
+                                                <img
+                                                    src={uploadedImageUri}
                                                     alt={rewardFormData.name}
                                                     className="w-full h-full object-cover"
                                                 />
@@ -1724,15 +1677,15 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                         // Sign and send transaction
                                                         if (data.transaction && signTransaction) {
                                                             const connection = new Connection('https://api.devnet.solana.com');
-                                                            
+
                                                             const transactionBuffer = Buffer.from(data.transaction, 'base64');
                                                             const transaction = VersionedTransaction.deserialize(transactionBuffer);
-                                                            
+
                                                             const signedTransaction = await signTransaction(transaction);
                                                             const signature = await connection.sendRawTransaction(signedTransaction.serialize());
-                                                            
+
                                                             await connection.confirmTransaction(signature, 'confirmed');
-                                                            
+
                                                             toast({
                                                                 title: "Success",
                                                                 description: `Reward NFT minted! Transaction: ${signature.slice(0, 8)}...`,
@@ -1759,7 +1712,7 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                         setSelectedDraft(null);
                                                         fetchRewardNfts();
                                                         fetchRewardDrafts();
-                                                        
+
                                                         // Delete draft if it was minted from a draft
                                                         if (selectedDraft) {
                                                             try {
@@ -1935,16 +1888,16 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                 </div>
                                 <div className="space-y-2">
                                     <label className="text-sm font-medium text-gray-600">Status</label>
-                                    <Badge 
+                                    <Badge
                                         variant={
                                             selectedDisputeDetail.status === 'PENDING' ? 'outline' :
-                                            selectedDisputeDetail.status === 'APPROVED' ? 'default' :
-                                            'destructive'
+                                                selectedDisputeDetail.status === 'APPROVED' ? 'default' :
+                                                    'destructive'
                                         }
                                         className={
                                             selectedDisputeDetail.status === 'PENDING' ? 'bg-amber-50 text-amber-700 border-amber-300' :
-                                            selectedDisputeDetail.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' :
-                                            'bg-red-50 text-red-700 border-red-300'
+                                                selectedDisputeDetail.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' :
+                                                    'bg-red-50 text-red-700 border-red-300'
                                         }
                                     >
                                         {selectedDisputeDetail.status}
@@ -2212,11 +2165,10 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                         <TableCell className="text-xs text-gray-700">{tx.transactionType}</TableCell>
                                                         <TableCell className="text-xs text-gray-700">{Number(tx.amount).toFixed(4)} {tx.currency || 'SOL'}</TableCell>
                                                         <TableCell>
-                                                            <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                                                tx.status === 'COMPLETED' ? 'bg-emerald-100 text-emerald-700' :
+                                                            <span className={`px-2 py-1 rounded text-xs font-medium ${tx.status === 'COMPLETED' ? 'bg-emerald-100 text-emerald-700' :
                                                                 tx.status === 'PENDING' ? 'bg-amber-100 text-amber-700' :
-                                                                'bg-red-100 text-red-700'
-                                                            }`}>
+                                                                    'bg-red-100 text-red-700'
+                                                                }`}>
                                                                 {tx.status}
                                                             </span>
                                                         </TableCell>
@@ -2244,16 +2196,16 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                         <p className="text-sm text-gray-700 mt-1">{dispute.reason}</p>
                                                         <p className="text-xs text-gray-500 mt-1">{Number(dispute.amount).toFixed(4)} SOL - {dispute.status}</p>
                                                     </div>
-                                                    <Badge 
+                                                    <Badge
                                                         variant={
                                                             dispute.status === 'PENDING' ? 'outline' :
-                                                            dispute.status === 'APPROVED' ? 'default' :
-                                                            'destructive'
+                                                                dispute.status === 'APPROVED' ? 'default' :
+                                                                    'destructive'
                                                         }
                                                         className={
                                                             dispute.status === 'PENDING' ? 'bg-amber-50 text-amber-700 border-amber-300' :
-                                                            dispute.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' :
-                                                            'bg-red-50 text-red-700 border-red-300'
+                                                                dispute.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' :
+                                                                    'bg-red-50 text-red-700 border-red-300'
                                                         }
                                                     >
                                                         {dispute.status}
@@ -2275,7 +2227,7 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                 })()})</label>
                                 {selectedUser.wallets && selectedUser.wallets.some((w: any) => w.nfts && w.nfts.length > 0) ? (
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                        {selectedUser.wallets.map((wallet: any) => 
+                                        {selectedUser.wallets.map((wallet: any) =>
                                             wallet.nfts?.map((nft: any) => (
                                                 <div key={nft.id} className="bg-gray-50 px-4 py-3 rounded border border-gray-200">
                                                     <p className="font-medium text-sm text-gray-700">{nft.name}</p>
@@ -2302,11 +2254,10 @@ export const AdminDashboard = ({ apiKey, onLogout }: { apiKey: string; onLogout:
                                                         <p className="text-sm font-medium text-gray-700">{entry.event?.name || 'Unknown Event'}</p>
                                                         <p className="text-xs text-gray-500 mt-1">{Number(entry.amount).toFixed(4)} SOL - {entry.status}</p>
                                                     </div>
-                                                    <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                                        entry.status === 'ACTIVE' ? 'bg-blue-100 text-blue-700' :
+                                                    <span className={`px-2 py-1 rounded text-xs font-medium ${entry.status === 'ACTIVE' ? 'bg-blue-100 text-blue-700' :
                                                         entry.status === 'COMPLETED' ? 'bg-emerald-100 text-emerald-700' :
-                                                        'bg-gray-100 text-gray-700'
-                                                    }`}>
+                                                            'bg-gray-100 text-gray-700'
+                                                        }`}>
                                                         {entry.status}
                                                     </span>
                                                 </div>

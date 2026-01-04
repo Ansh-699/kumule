@@ -1,0 +1,25 @@
+{
+  "transactions": [
+    {
+      "step": "mint",
+      "signature": "51Sgu4VnaVoUVxUPegLSBEPuJpfQ52nvUEAuCQSFLDMpro8VfD4VZj3vAP94Xe5KoP1CzjqYyUSXzsCRNnDU59BG",
+      "assetId": "8JErzJPKHxHFP8gEPLqjQLHDeffKeEqfe2oBhzmAPWB4",
+      "explorerLink": "https://explorer.solana.com/tx/51Sgu4VnaVoUVxUPegLSBEPuJpfQ52nvUEAuCQSFLDMpro8VfD4VZj3vAP94Xe5KoP1CzjqYyUSXzsCRNnDU59BG?cluster=devnet"
+    },
+    {
+      "step": "list",
+      "signature": "66uiNpv65wNZk7pNipH7oSQwHDx6CzdtbVCt2MSbKJiRNwHHGSobMvGiHa8LqVN3RMGeQU6fnckCokLtKiKYBUw7",
+      "assetId": "8JErzJPKHxHFP8gEPLqjQLHDeffKeEqfe2oBhzmAPWB4",
+      "price": 0.1,
+      "explorerLink": "https://explorer.solana.com/tx/66uiNpv65wNZk7pNipH7oSQwHDx6CzdtbVCt2MSbKJiRNwHHGSobMvGiHa8LqVN3RMGeQU6fnckCokLtKiKYBUw7?cluster=devnet"
+    },
+    {
+      "step": "buy",
+      "signature": "5CDgyYmtbPZPYyBSDm9ybJq58eRjedrrpkVbbWSHn2EU4oA96EpfSxdc9f2XpgcAG2EcFeJumgRGgM6yuQ6yov9w",
+      "assetId": "8JErzJPKHxHFP8gEPLqjQLHDeffKeEqfe2oBhzmAPWB4",
+      "buyer": "4fHpFMJGLQ5HZgJmXvWceaN3N5LwEtsFi9fb3RF9Wvky",
+      "explorerLink": "https://explorer.solana.com/tx/5CDgyYmtbPZPYyBSDm9ybJq58eRjedrrpkVbbWSHn2EU4oA96EpfSxdc9f2XpgcAG2EcFeJumgRGgM6yuQ6yov9w?cluster=devnet"
+    }
+  ],
+  "errors": []
+}

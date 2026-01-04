@@ -1,6 +1,6 @@
 // Local dev backend (Cloudflare Worker via `bun run dev` / `wrangler dev`)
 // Make sure this port matches the one shown in your worker dev logs.
-export const API_BASE_URL = 'http://localhost:8787'; // Production Worker URL https://kumele-backend.ansht.workers.dev
+export const API_BASE_URL = 'https://kumele-backend.ansht.workers.dev'; // Production Worker URL https://kumele-backend.ansht.workers.dev
 
 // Upload image to R2 (for admin reward NFT minting and marketplace)
 export const uploadImageToR2 = async (file: File, apiKey?: string): Promise<{ url: string; filename: string }> => {
@@ -52,7 +52,7 @@ export const uploadFilesToR2 = async (mainFile: File, coverFile?: File | null): 
 }
 
 // Upload metadata to R2 (for admin reward NFT minting and marketplace)
-export const uploadMetadataToR2 = async (metadata: any, apiKey?: string, filename?: string): Promise<{ url: string }> => {
+export const uploadMetadataToR2 = async (metadata: Record<string, unknown>, apiKey?: string, filename?: string): Promise<{ url: string }> => {
     const url = apiKey 
         ? `${API_BASE_URL}/api/upload/metadata?apiKey=${apiKey}`
         : `${API_BASE_URL}/api/upload/metadata`
@@ -170,7 +170,7 @@ export interface NftAsset {
         type: string;
         address: string;
     };
-    [key: string]: any;
+    [key: string]: unknown;
 }
 
 export interface NftMetadata {
@@ -188,7 +188,7 @@ export interface NftMetadata {
             type: string;
         }[];
         category?: string;
-        [key: string]: any;
+        [key: string]: unknown;
     };
 }
 
@@ -258,9 +258,9 @@ export const fetchNftByAsset = async (assetAddress: string): Promise<NftAsset> =
         const data = await response.json();
         console.log('API Data:', data);
         return data;
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('Error in fetchNftByAsset:', error);
-        if (error.name === 'AbortError') {
+        if (error instanceof Error && error.name === 'AbortError') {
             throw new Error('Request timed out');
         }
         throw error;
@@ -317,9 +317,9 @@ export const fetchNftByOwner = async (ownerAddress: string): Promise<NftAsset[]>
             return [data];
         }
         return [];
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('Error in fetchNftByOwner:', error);
-        if (error.name === 'AbortError') {
+        if (error instanceof Error && error.name === 'AbortError') {
             console.error('Request timed out');
         }
         // Return empty array instead of throwing for better UX

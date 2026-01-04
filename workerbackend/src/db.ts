@@ -1,12 +1,10 @@
 import { PrismaClient } from '@prisma/client'
-import { Pool } from 'pg'
-import { PrismaPg } from '@prisma/adapter-pg'
+import { PrismaNeon } from '@prisma/adapter-neon'
 
 // Create Prisma client using a connection string
 // Works with both DATABASE_URL and Hyperdrive connectionString
 export const getPrisma = (connectionString: string) => {
-    const pool = new Pool({ connectionString })
-    const adapter = new PrismaPg(pool)
+    const adapter = new PrismaNeon({ connectionString })
     const prisma = new PrismaClient({ adapter })
     return prisma
 }
@@ -16,15 +14,13 @@ export const withPrisma = async <T>(
     connectionString: string,
     fn: (prisma: PrismaClient) => Promise<T>
 ): Promise<T> => {
-    const pool = new Pool({ connectionString })
-    const adapter = new PrismaPg(pool)
+    const adapter = new PrismaNeon({ connectionString })
     const prisma = new PrismaClient({ adapter })
     
     try {
         return await fn(prisma)
     } finally {
         await prisma.$disconnect()
-        await pool.end()
     }
 }
 
@@ -44,4 +40,34 @@ export const getConnectionString = (env: CloudflareBindings): string => {
     }
     console.error('DB: No connection string available')
     return ''
+}
+
+// Shared helper to ensure a user exists in the database (find by wallet or create)
+// This eliminates duplicate code across escrow.ts, event.ts, reward.ts, dispute.ts, etc.
+export async function ensureUserExists(prisma: PrismaClient, walletAddress: string): Promise<string> {
+    let user = await prisma.user.findFirst({
+        where: {
+            wallets: {
+                some: { walletAddress: walletAddress }
+            }
+        },
+        include: { wallets: true }
+    });
+
+    if (!user) {
+        console.log('DB: Creating new user for wallet', walletAddress)
+        user = await prisma.user.create({
+            data: {
+                wallets: {
+                    create: {
+                        walletAddress: walletAddress,
+                        walletType: 'solana'
+                    }
+                }
+            },
+            include: { wallets: true }
+        });
+    }
+
+    return user.id
 }

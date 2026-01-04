@@ -8,10 +8,36 @@ import {
 } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { NftAsset, NftMetadata } from '@/services/api';
+import { ExternalLink, Music, Image, Ticket, FileVideo } from 'lucide-react';
 
 interface NftCardProps {
     nft: NftAsset;
     onList?: (nft: NftAsset) => void;
+}
+
+// Determine NFT category based on metadata
+function getNftCategory(metadata: NftMetadata | null): { type: string; icon: React.ReactNode; color: string } {
+    if (!metadata) return { type: 'Unknown', icon: <Image className="w-3 h-3" />, color: 'bg-gray-500/20 text-gray-500' };
+    
+    const category = metadata.properties?.category?.toLowerCase();
+    const name = (metadata.name || '').toLowerCase();
+    
+    if (category === 'audio' || name.includes('track') || name.includes('album') || name.includes('music')) {
+        return { type: 'Music', icon: <Music className="w-3 h-3" />, color: 'bg-purple-500/20 text-purple-500' };
+    }
+    if (category === 'video' || metadata.animation_url?.includes('.mp4')) {
+        return { type: 'Video', icon: <FileVideo className="w-3 h-3" />, color: 'bg-blue-500/20 text-blue-500' };
+    }
+    if (name.includes('badge') || name.includes('ticket') || name.includes('event')) {
+        return { type: 'Event Badge', icon: <Ticket className="w-3 h-3" />, color: 'bg-amber-500/20 text-amber-500' };
+    }
+    
+    return { type: 'Artwork', icon: <Image className="w-3 h-3" />, color: 'bg-green-500/20 text-green-500' };
+}
+
+// Generate Solana explorer URL
+function getExplorerUrl(publicKey: string): string {
+    return `https://explorer.solana.com/address/${publicKey}?cluster=devnet`;
 }
 
 export const NftCard: React.FC<NftCardProps> = ({ nft, onList }) => {
@@ -41,6 +67,25 @@ export const NftCard: React.FC<NftCardProps> = ({ nft, onList }) => {
     return (
         <Card className="w-full overflow-hidden hover:shadow-lg transition-shadow flex flex-col h-full">
             <div className="h-48 w-full relative overflow-hidden bg-muted group">
+                {/* NFT Type Badge */}
+                {!loading && (
+                    <div className="absolute top-2 left-2 z-10">
+                        <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${getNftCategory(metadata).color}`}>
+                            {getNftCategory(metadata).icon}
+                            {getNftCategory(metadata).type}
+                        </span>
+                    </div>
+                )}
+                {/* Explorer Link */}
+                <a
+                    href={getExplorerUrl(nft.publicKey)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="absolute top-2 right-2 z-10 p-1.5 rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/70"
+                    title="View on Solana Explorer"
+                >
+                    <ExternalLink className="w-4 h-4" />
+                </a>
                 {loading ? (
                     <Skeleton className="w-full h-full" />
                 ) : metadata?.animation_url ? (
@@ -85,8 +130,17 @@ export const NftCard: React.FC<NftCardProps> = ({ nft, onList }) => {
                 <CardTitle className="truncate text-base" title={metadata?.name || nft.name}>
                     {metadata?.name || nft.name || 'Unnamed NFT'}
                 </CardTitle>
-                <CardDescription className="truncate text-xs font-mono" title={nft.publicKey}>
-                    {nft.publicKey}
+                <CardDescription className="truncate text-xs font-mono flex items-center gap-1" title={nft.publicKey}>
+                    <span>{nft.publicKey.slice(0, 8)}...{nft.publicKey.slice(-8)}</span>
+                    <a
+                        href={getExplorerUrl(nft.publicKey)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:text-primary/80"
+                        title="View on Solana Explorer"
+                    >
+                        <ExternalLink className="w-3 h-3" />
+                    </a>
                 </CardDescription>
             </CardHeader>
             <CardContent className="p-3 pt-0 flex-grow">

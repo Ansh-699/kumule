@@ -1,6 +1,5 @@
 
 import { Context } from 'hono'
-import { Buffer } from 'buffer'
 import { getUmi } from './umi'
 import { generateSigner, publicKey } from '@metaplex-foundation/umi'
 import { createV1 } from '@metaplex-foundation/mpl-core'
@@ -8,14 +7,47 @@ import { base58 } from '@metaplex-foundation/umi/serializers'
 
 import { checkChargeStatus } from './payment'
 import { withPrisma, getConnectionString } from './db'
+import { logBlockchainTransaction, logSecurityEvent, recordAuditedTransaction } from './audit'
 
 export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    const startTime = Date.now()
+    console.log('[MINT] Request received:', new Date().toISOString())
+    
     try {
         const body = await c.req.json()
         const { uri, name, owner, collection, paymentMethod, chargeId } = body
 
+        console.log('[MINT] Params:', JSON.stringify({ name, owner: owner?.slice(0, 8) + '...', paymentMethod, hasUri: !!uri }))
+
         if (!uri || !name || !owner) {
+            console.log('[MINT] Missing required fields')
             return c.text('Missing required fields: uri, name, owner', 400)
+        }
+
+        // Check for duplicate mint attempt using same metadata URI
+        const connectionStringForDupeCheck = getConnectionString(c.env)
+        if (connectionStringForDupeCheck) {
+            try {
+                const existingNft = await withPrisma(connectionStringForDupeCheck, async (prisma) => {
+                    return prisma.nft.findFirst({
+                        where: { metadataUri: uri }
+                    })
+                })
+                if (existingNft) {
+                    logSecurityEvent('duplicate_mint_attempt', {
+                        actor: owner,
+                        target: uri,
+                        metadata: { existingNftId: existingNft.nftId }
+                    })
+                    return c.json({
+                        error: 'Duplicate mint attempt',
+                        message: 'An NFT with this metadata URI already exists',
+                        existingNftId: existingNft.nftId
+                    }, 409) // Conflict status
+                }
+            } catch (e) {
+                console.warn('Duplicate check failed (continuing):', e)
+            }
         }
 
         // Verify payment if method is coinbase
@@ -220,13 +252,34 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             console.warn('Database connection not configured - skipping DB recording')
         }
 
+        // Log successful transaction preparation
+        logBlockchainTransaction({
+            action: 'mint_nft',
+            walletAddress: owner,
+            assetId: assetKey,
+            success: true
+        })
+
+        const duration = Date.now() - startTime
+        console.log('[MINT] Success:', JSON.stringify({ assetId: assetKey, durationMs: duration }))
+
         return c.json({
             transaction: base64Tx,
             mint: assetKey
         })
 
     } catch (error) {
-        console.error('Mint error:', error)
+        const duration = Date.now() - startTime
+        console.error('[MINT] Error:', error, `Duration: ${duration}ms`)
+        
+        // Log failed mint attempt
+        logBlockchainTransaction({
+            action: 'mint_nft',
+            walletAddress: 'unknown',
+            success: false,
+            error: error instanceof Error ? error.message : String(error)
+        })
+        
         return c.text(`Mint failed: ${error} `, 500)
     }
 }

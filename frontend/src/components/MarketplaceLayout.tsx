@@ -7,6 +7,9 @@ import { UserNftList } from './UserNftList';
 import { NftCreator } from './NftCreator';
 import { NftDetailPage } from './NftDetailPage';
 import { RewardSystem } from './RewardSystem';
+import { EventsPage } from './EventsPage';
+import { EventDetailPage } from './EventDetailPage';
+import { AlbumPage } from './AlbumPage';
 import { Button } from '@/components/ui/button';
 
 export const MarketplaceLayout = () => {
@@ -73,6 +76,12 @@ export const MarketplaceLayout = () => {
             >
               Rewards
             </button>
+            <button
+              onClick={() => navigate('/events')}
+              className={`px-4 py-2 rounded-md font-medium transition-colors ${location.pathname === '/events' ? 'bg-primary text-primary-foreground' : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'}`}
+            >
+              Events
+            </button>
           </div>
         </header>
 
@@ -83,11 +92,13 @@ export const MarketplaceLayout = () => {
             <Route path="/my-nfts" element={<UserNftList />} />
             <Route path="/create" element={<NftCreator />} />
             <Route path="/rewards" element={<RewardSystem />} />
+            <Route path="/events" element={<EventsPage />} />
+            <Route path="/events/:eventId" element={<EventDetailPage />} />
             <Route path="/nft/:id" element={<NftDetailPage />} />
+            <Route path="/album/:id" element={<AlbumPage />} />
           </Routes>
         </main>
       </div>
     </div>
   );
 };
-

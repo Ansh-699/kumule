@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import { Buffer } from 'buffer'
 (globalThis as any).Buffer = Buffer;
-import { cors } from 'hono/cors'
 import { searchNftByAsset } from './searchnftbyasset'
 import { searchNftByOwner } from './searchnftbyowner'
 import { transferNft } from './transfer'
@@ -13,6 +12,7 @@ import { createDispute, getDisputes, getDispute, resolveDispute, markDisputeRefu
 import { adminAuth, getAdminDashboard } from './admin'
 import { getOrCreateRewardAccount, recordInteraction, claimNftReward, getAvailableRewards } from './reward'
 import { withPrisma, getConnectionString } from './db'
+import { createEvent, listEvents, joinEvent, deleteEvent } from './event'
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()
 
@@ -54,6 +54,12 @@ app.use('*', async (c, next) => {
   
   await next()
 })
+
+// Event endpoints (moved after CORS middleware)
+app.post('/api/events', createEvent)
+app.get('/api/events', listEvents)
+app.post('/api/events/:id/join', joinEvent)
+app.delete('/api/events/:id', adminAuth, deleteEvent)
 
 // Simplified path normalization middleware - skip for health/test endpoints
 app.use('*', async (c, next) => {
@@ -138,12 +144,38 @@ app.put('/api/admin/rewards/drafts/:id', adminAuth, updateRewardDraft)
 app.delete('/api/admin/rewards/drafts/:id', adminAuth, deleteRewardDraft)
 
 // R2 Upload routes (for admin reward NFT minting and marketplace)
-import { uploadImageToR2, uploadFilesToR2, uploadMetadataToR2, serveImageFromR2, serveMetadataFromR2 } from './upload'
+import { uploadImageToR2, uploadFilesToR2, uploadMetadataToR2, serveImageFromR2, serveMetadataFromR2, uploadAudioToR2, serveAudioFromR2 } from './upload'
 app.post('/api/upload/image', uploadImageToR2) // Public (no auth needed for marketplace)
 app.post('/api/upload/files', uploadFilesToR2) // Public (for main + cover files)
 app.post('/api/upload/metadata', uploadMetadataToR2) // Public (no auth needed for marketplace)
+app.post('/api/upload/audio', uploadAudioToR2) // Public (for music album tracks)
 app.get('/cdn/images/:filename', serveImageFromR2)
 app.get('/cdn/metadata/:filename', serveMetadataFromR2)
+app.get('/cdn/audio/:filename', serveAudioFromR2) // Audio streaming with range support
+
+// Album routes (for music NFT albums)
+import { createAlbum, listAlbums, getAlbum, updateAlbum, deleteAlbum, addTrack, updateTrack, deleteTrack, generateTrackMetadata } from './album'
+app.post('/api/albums', createAlbum)
+app.get('/api/albums', listAlbums)
+app.get('/api/albums/:id', getAlbum)
+app.put('/api/albums/:id', updateAlbum)
+app.delete('/api/albums/:id', deleteAlbum)
+app.post('/api/albums/:id/tracks', addTrack)
+app.put('/api/albums/:id/tracks/:trackId', updateTrack)
+app.delete('/api/albums/:id/tracks/:trackId', deleteTrack)
+app.get('/api/albums/:id/tracks/:trackId/metadata', generateTrackMetadata)
+
+// Audit routes (transaction checksum verification)
+import { verifyTransactionChecksum, logSecurityEvent } from './audit'
+app.get('/api/audit/verify/:transactionId', async (c) => {
+  const { transactionId } = c.req.param()
+  const connectionString = getConnectionString(c.env)
+  if (!connectionString) {
+    return c.json({ valid: false, message: 'Database not configured' }, 500)
+  }
+  const result = await verifyTransactionChecksum(connectionString, transactionId)
+  return c.json(result, result.valid ? 200 : 400)
+})
 
 // Simple DB debug route: runs a trivial Prisma query
 app.get('/debug/db', async (c) => {

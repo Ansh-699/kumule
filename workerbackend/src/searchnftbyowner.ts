@@ -93,6 +93,8 @@ export const searchNftByOwner = async (c: Context<{ Bindings: CloudflareBindings
                     type: asset.updateAuthority?.type || 'program',
                     address: updateAuthority
                 } : undefined,
+                // Solana Explorer link for verification
+                explorerUrl: `https://explorer.solana.com/address/${publicKey}?cluster=devnet`,
                 // Preserve other fields but convert BigInt values
                 ...convertBigInt(asset)
             }
@@ -180,6 +182,8 @@ export const searchNftByOwner = async (c: Context<{ Bindings: CloudflareBindings
                             type: asset.updateAuthority?.type || 'program',
                             address: updateAuthority
                         } : undefined,
+                        // Solana Explorer link for verification
+                        explorerUrl: `https://explorer.solana.com/address/${publicKey}?cluster=devnet`,
                         ...convertBigInt(asset)
                     }
                     
