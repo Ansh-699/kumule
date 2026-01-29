@@ -1,22 +1,58 @@
 import { Context } from 'hono'
 import { withPrisma, getConnectionString, ensureUserExists } from './db'
+import { autoMintEventRewards } from './event-auto-mint'
 
-// Create a new event
+// Default reward configuration
+const DEFAULT_REWARD_CONFIG = {
+    goldSupply: 1,
+    goldPoints: 100,
+    goldName: 'Gold Medal',
+    goldImageUrl: null,
+    silverSupply: 3,
+    silverPoints: 60,
+    silverName: 'Silver Medal',
+    silverImageUrl: null,
+    bronzeSupply: 5,
+    bronzePoints: 30,
+    bronzeName: 'Bronze Medal',
+    bronzeImageUrl: null,
+}
+
+// Create a new event with optional auto-mint reward configuration
 export const createEvent = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     try {
-        const { name, description, entryFee, eventDate, creatorWallet } = await c.req.json()
+        const { 
+            name, 
+            description, 
+            entryFee, 
+            eventDate, 
+            creatorWallet,
+            // New reward config fields
+            rewardConfig,
+            enableRewards = false // Whether to auto-mint rewards
+        } = await c.req.json()
+        
         if (!name || !creatorWallet) {
             return c.json({ error: 'Missing required fields: name and creatorWallet are required' }, 400)
         }
+        
         const connectionString = getConnectionString(c.env)
         if (!connectionString) {
             return c.json({ error: 'Database not configured' }, 500)
         }
+        
+        // Merge provided config with defaults
+        const finalRewardConfig = enableRewards ? {
+            ...DEFAULT_REWARD_CONFIG,
+            ...(rewardConfig || {})
+        } : null
+        
         const event = await withPrisma(connectionString, async (prisma) => {
             // Find or create user based on wallet address
             const creatorId = await ensureUserExists(prisma, creatorWallet)
             
-            return await prisma.event.create({
+            // Create event
+            const newEvent = await prisma.event.create({
                 data: {
                     name,
                     description,
@@ -26,8 +62,58 @@ export const createEvent = async (c: Context<{ Bindings: CloudflareBindings }>) 
                     creatorId,
                 }
             })
+            
+            // Create reward config if rewards are enabled
+            if (finalRewardConfig) {
+                await prisma.eventRewardConfig.create({
+                    data: {
+                        eventId: newEvent.id,
+                        goldSupply: finalRewardConfig.goldSupply,
+                        goldPoints: finalRewardConfig.goldPoints,
+                        goldName: finalRewardConfig.goldName,
+                        goldImageUrl: finalRewardConfig.goldImageUrl,
+                        silverSupply: finalRewardConfig.silverSupply,
+                        silverPoints: finalRewardConfig.silverPoints,
+                        silverName: finalRewardConfig.silverName,
+                        silverImageUrl: finalRewardConfig.silverImageUrl,
+                        bronzeSupply: finalRewardConfig.bronzeSupply,
+                        bronzePoints: finalRewardConfig.bronzePoints,
+                        bronzeName: finalRewardConfig.bronzeName,
+                        bronzeImageUrl: finalRewardConfig.bronzeImageUrl,
+                        mintingStatus: 'PENDING',
+                        totalToMint: finalRewardConfig.goldSupply + finalRewardConfig.silverSupply + finalRewardConfig.bronzeSupply
+                    }
+                })
+            }
+            
+            return newEvent
         })
-        return c.json(event)
+        
+        // Trigger auto-minting in background (non-blocking) if rewards are enabled
+        if (finalRewardConfig) {
+            c.executionCtx.waitUntil(
+                autoMintEventRewards(c.env, event.id, name, finalRewardConfig)
+                    .then(result => {
+                        console.log(`Auto-mint for event ${event.id} (${name}) completed:`, 
+                            result.success ? 'SUCCESS' : 'PARTIAL/FAILED',
+                            `- ${result.minted.filter(m => m.success).length}/${result.minted.length} NFTs minted`)
+                    })
+                    .catch(err => {
+                        console.error(`Auto-mint for event ${event.id} (${name}) failed:`, err.message)
+                    })
+            )
+        }
+        
+        return c.json({ 
+            ...event, 
+            rewardMinting: finalRewardConfig ? 'STARTED' : 'NOT_CONFIGURED',
+            rewardConfig: finalRewardConfig ? {
+                goldSupply: finalRewardConfig.goldSupply,
+                silverSupply: finalRewardConfig.silverSupply,
+                bronzeSupply: finalRewardConfig.bronzeSupply,
+                totalNfts: finalRewardConfig.goldSupply + finalRewardConfig.silverSupply + finalRewardConfig.bronzeSupply
+            } : null
+        })
     } catch (e: any) {
         console.error('Create event error:', e)
         return c.json({ error: e.message }, 500)
@@ -57,18 +143,48 @@ export const joinEvent = async (c: Context<{ Bindings: CloudflareBindings }>) =>
     try {
         const eventId = c.req.param('id')
         const { userId, walletAddress, amount, txHash } = await c.req.json()
-        if (!eventId || !userId || !walletAddress) {
-            return c.json({ error: 'Missing required fields' }, 400)
+        if (!eventId || !walletAddress) {
+            return c.json({ error: 'Missing required fields (eventId and walletAddress required)' }, 400)
         }
         const connectionString = getConnectionString(c.env)
         if (!connectionString) {
             return c.json({ error: 'Database not configured' }, 500)
         }
         const entry = await withPrisma(connectionString, async (prisma) => {
+            // Find or create user based on wallet address
+            let resolvedUserId = userId
+            if (!resolvedUserId) {
+                // Try to find existing user by wallet
+                const existingWallet = await prisma.wallet.findFirst({
+                    where: { walletAddress }
+                })
+                if (existingWallet) {
+                    resolvedUserId = existingWallet.userId
+                } else {
+                    // Create new user and wallet
+                    const newUser = await prisma.user.create({
+                        data: {
+                            wallets: {
+                                create: { walletAddress }
+                            }
+                        }
+                    })
+                    resolvedUserId = newUser.id
+                }
+            }
+            
+            // Check if already joined
+            const existingEntry = await prisma.eventEntry.findFirst({
+                where: { eventId, walletAddress }
+            })
+            if (existingEntry) {
+                return existingEntry // Already joined, return existing entry
+            }
+            
             return await prisma.eventEntry.create({
                 data: {
                     eventId,
-                    userId,
+                    userId: resolvedUserId,
                     walletAddress,
                     amount: amount || 0,
                     txHash: txHash || null,
@@ -77,6 +193,7 @@ export const joinEvent = async (c: Context<{ Bindings: CloudflareBindings }>) =>
         })
         return c.json(entry)
     } catch (e: any) {
+        console.error('Join event error:', e)
         return c.json({ error: e.message }, 500)
     }
 }

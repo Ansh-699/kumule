@@ -132,10 +132,48 @@ model Event {
   rewardNfts    EventRewardNft[]
   userProgress  EventUserProgress[]
   rewardClaims  EventRewardClaim[]
+  rewardConfig  EventRewardConfig?
 
   @@index([creatorId])
   @@index([status])
   @@map("events")
+}
+
+// Event Reward Configuration - set during event creation for auto-minting
+model EventRewardConfig {
+  id              String   @id @default(uuid())
+  eventId         String   @unique @map("event_id")
+  
+  // Gold NFT config
+  goldSupply      Int      @default(1) @map("gold_supply")
+  goldPoints      Int      @default(100) @map("gold_points")
+  goldImageUrl    String?  @map("gold_image_url")
+  goldName        String   @default("Gold Medal") @map("gold_name")
+  
+  // Silver NFT config
+  silverSupply    Int      @default(3) @map("silver_supply")
+  silverPoints    Int      @default(60) @map("silver_points")
+  silverImageUrl  String?  @map("silver_image_url")
+  silverName      String   @default("Silver Medal") @map("silver_name")
+  
+  // Bronze NFT config
+  bronzeSupply    Int      @default(5) @map("bronze_supply")
+  bronzePoints    Int      @default(30) @map("bronze_points")
+  bronzeImageUrl  String?  @map("bronze_image_url")
+  bronzeName      String   @default("Bronze Medal") @map("bronze_name")
+  
+  // Minting status
+  mintingStatus   String   @default("PENDING") @map("minting_status") // PENDING, MINTING, COMPLETED, PARTIAL, FAILED
+  mintingError    String?  @map("minting_error")
+  mintedCount     Int      @default(0) @map("minted_count")
+  totalToMint     Int      @default(0) @map("total_to_mint")
+  
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  
+  event           Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  
+  @@map("event_reward_configs")
 }
 
 model EventEntry {

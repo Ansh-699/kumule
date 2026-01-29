@@ -15,13 +15,44 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     
     try {
         const body = await c.req.json()
-        const { uri, name, owner, collection, paymentMethod, chargeId } = body
+        let { uri, name, owner, collection, paymentMethod, chargeId } = body
 
         console.log('[MINT] Params:', JSON.stringify({ name, owner: owner?.slice(0, 8) + '...', paymentMethod, hasUri: !!uri }))
 
         if (!uri || !name || !owner) {
             console.log('[MINT] Missing required fields')
             return c.text('Missing required fields: uri, name, owner', 400)
+        }
+
+        // Validate owner is a valid Solana public key (32-44 chars, base58)
+        if (typeof owner !== 'string' || owner.length < 32 || owner.length > 44) {
+            return c.text('Invalid owner wallet address. Must be a valid Solana public key (32-44 characters)', 400)
+        }
+
+        // Clean up optional fields - ignore placeholder values from Swagger or invalid types
+        // Convert to string first if needed, then check for placeholders
+        if (collection !== undefined && collection !== null) {
+            collection = String(collection)
+            if (collection === 'string' || collection === '' || collection === 'undefined' || collection === 'null') {
+                collection = undefined
+            }
+        }
+        if (paymentMethod !== undefined && paymentMethod !== null) {
+            paymentMethod = String(paymentMethod)
+            if (paymentMethod === 'string' || paymentMethod === '' || paymentMethod === 'undefined' || paymentMethod === 'null') {
+                paymentMethod = undefined
+            }
+        }
+        if (chargeId !== undefined && chargeId !== null) {
+            chargeId = String(chargeId)
+            if (chargeId === 'string' || chargeId === '' || chargeId === 'undefined' || chargeId === 'null') {
+                chargeId = undefined
+            }
+        }
+
+        // Validate collection if provided
+        if (collection && (collection.length < 32 || collection.length > 44)) {
+            return c.text('Invalid collection address. Must be a valid Solana public key (32-44 characters)', 400)
         }
 
         // Check for duplicate mint attempt using same metadata URI

@@ -1,6 +1,6 @@
 import { Context } from 'hono'
 import { fetchAsset } from '@metaplex-foundation/mpl-core'
-import { publicKey } from '@metaplex-foundation/umi'
+import { publicKey as toPublicKey } from '@metaplex-foundation/umi'
 import { getUmi } from './umi'
 
 export const searchNftByAsset = async (c: Context<{ Bindings: CloudflareBindings }>) => {
@@ -26,7 +26,7 @@ export const searchNftByAsset = async (c: Context<{ Bindings: CloudflareBindings
         
         // Fetch asset with timeout
         const asset = await Promise.race([
-            fetchAsset(umi, publicKey(address), {
+            fetchAsset(umi, toPublicKey(address), {
                 skipDerivePlugins: false,
             }),
             new Promise((_, reject) => 
@@ -37,7 +37,7 @@ export const searchNftByAsset = async (c: Context<{ Bindings: CloudflareBindings
         console.log(`Asset fetched successfully`)
 
         // Format the asset response
-        const publicKey = asset.publicKey?.toString() || asset.publicKey || asset.key?.toString() || asset.key
+        const assetPublicKey = asset.publicKey?.toString() || asset.publicKey || asset.key?.toString() || asset.key
         const name = asset.name || asset.metadata?.name || 'Unnamed NFT'
         const uri = asset.uri || asset.metadata?.uri || ''
         const owner = asset.owner?.toString() || asset.owner
@@ -45,8 +45,22 @@ export const searchNftByAsset = async (c: Context<{ Bindings: CloudflareBindings
                               asset.updateAuthority?.toString() || 
                               asset.updateAuthority
 
+        // Helper to safely serialize values (handles BigInt)
+        const safeSerialize = (obj: any): any => {
+            if (obj === null || obj === undefined) return obj
+            if (typeof obj === 'bigint') return obj.toString()
+            if (typeof obj !== 'object') return obj
+            if (Array.isArray(obj)) return obj.map(safeSerialize)
+            
+            const result: any = {}
+            for (const [key, value] of Object.entries(obj)) {
+                result[key] = safeSerialize(value)
+            }
+            return result
+        }
+
         const formattedAsset = {
-            publicKey,
+            publicKey: assetPublicKey,
             name,
             uri,
             owner,
@@ -54,10 +68,10 @@ export const searchNftByAsset = async (c: Context<{ Bindings: CloudflareBindings
                 type: asset.updateAuthority?.type || 'program',
                 address: updateAuthority
             } : undefined,
-            // Solana Explorer link for verification
-            explorerUrl: `https://explorer.solana.com/address/${publicKey}?cluster=devnet`,
-            // Preserve other fields
-            ...asset
+            explorerUrl: `https://explorer.solana.com/address/${assetPublicKey}?cluster=devnet`,
+            header: asset.header ? safeSerialize(asset.header) : undefined,
+            key: asset.key,
+            seq: asset.seq ? safeSerialize(asset.seq) : undefined
         }
 
         return c.json(formattedAsset, 200)

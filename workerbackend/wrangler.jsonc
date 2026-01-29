@@ -30,6 +30,10 @@
     {
       "binding": "NFT_IMAGES",
       "bucket_name": "nftimages"
+    },
+    {
+      "binding": "NFT_BUCKET",
+      "bucket_name": "nftimages"
     }
   ],
   // "d1_databases": [
