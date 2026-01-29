@@ -11,8 +11,14 @@ import { keypairIdentity, generateSigner } from '@metaplex-foundation/umi';
 import { base58 } from '@metaplex-foundation/umi/serializers';
 
 // Configuration - use same values as .dev.vars
-const ADMIN_WALLET_PRIVATE_KEY = 'REDACTED_PRIVATE_KEY';
-const SOLANA_RPC_URL = 'https://devnet.helius-rpc.com/?api-key=REDACTED_API_KEY';
+// IMPORTANT: Set these environment variables before running
+const ADMIN_WALLET_PRIVATE_KEY = process.env.ADMIN_WALLET_PRIVATE_KEY || '';
+const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com';
+
+if (!ADMIN_WALLET_PRIVATE_KEY) {
+    console.error('ERROR: ADMIN_WALLET_PRIVATE_KEY environment variable is required');
+    process.exit(1);
+}
 
 async function testDirectMint() {
     console.log('=== Direct NFT Mint Test ===\n');
