@@ -22,6 +22,11 @@ export const NftCreator = () => {
     const [createdNft, setCreatedNft] = useState<string | null>(null);
     const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('wallet');
 
+    const isAlreadyProcessedError = (err: unknown): boolean => {
+        const message = err instanceof Error ? err.message : String(err);
+        return message.toLowerCase().includes('already been processed');
+    };
+
     const [formData, setFormData] = useState({
         name: '',
         symbol: '',
@@ -278,23 +283,46 @@ export const NftCreator = () => {
             const tx = VersionedTransaction.deserialize(new Uint8Array(txBuffer));
 
             const signedTx = await signTransaction(tx);
+            const signedTxBytes = signedTx.serialize();
 
             setStatus('Sending transaction to Solana...');
-            const signature = await connection.sendRawTransaction(signedTx.serialize());
+            let finalSignature: string | null = null;
+            try {
+                finalSignature = await connection.sendRawTransaction(signedTxBytes, {
+                    skipPreflight: true,
+                    maxRetries: 3,
+                });
+            } catch (sendErr: unknown) {
+                if (!isAlreadyProcessedError(sendErr)) {
+                    throw sendErr;
+                }
 
-            setStatus('Confirming transaction...');
-            await connection.confirmTransaction(signature, 'confirmed');
+                // Some RPCs return "already processed" for successful duplicate submissions.
+                // In that case, keep going and mark mint as successful.
+                console.warn('Transaction already processed by RPC; continuing as success.');
+            }
+
+            if (finalSignature) {
+                setStatus('Confirming transaction...');
+                await connection.confirmTransaction(finalSignature, 'confirmed');
+            } else {
+                setStatus('Transaction was already processed. Finalizing mint...');
+            }
 
             // Log the mint transaction to database
             try {
-                await notifySolanaPayment(
-                    signature,
-                    publicKey.toString(),
-                    0, // Minting is free (only gas)
-                    mint,
-                    'MINT'
-                );
-                console.log('Mint transaction logged to database');
+                if (finalSignature) {
+                    await notifySolanaPayment(
+                        finalSignature,
+                        publicKey.toString(),
+                        0, // Minting is free (only gas)
+                        mint,
+                        'MINT'
+                    );
+                    console.log('Mint transaction logged to database');
+                } else {
+                    console.log('Mint completed without local signature (already processed case)');
+                }
             } catch (logError) {
                 console.warn('Failed to log mint transaction:', logError);
             }
