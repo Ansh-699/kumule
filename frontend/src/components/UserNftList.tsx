@@ -18,6 +18,11 @@ export const UserNftList = () => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [selectedNft, setSelectedNft] = useState<NftAsset | null>(null);
 
+    const isAlreadyProcessedError = (err: unknown): boolean => {
+        const message = err instanceof Error ? err.message : String(err);
+        return message.toLowerCase().includes('already been processed');
+    };
+
     useEffect(() => {
         if (walletPublicKey) {
             loadNfts();
@@ -95,23 +100,41 @@ export const UserNftList = () => {
             const tx = VersionedTransaction.deserialize(new Uint8Array(txBuffer));
 
             const signedTx = await signTransaction(tx);
+            const signedTxBytes = signedTx.serialize();
 
-            const signature = await connection.sendRawTransaction(signedTx.serialize());
+            let signature: string | null = null;
+            try {
+                signature = await connection.sendRawTransaction(signedTxBytes, {
+                    skipPreflight: true,
+                    maxRetries: 3,
+                });
+            } catch (sendErr: unknown) {
+                if (!isAlreadyProcessedError(sendErr)) {
+                    throw sendErr;
+                }
+                console.warn('Listing transaction already processed by RPC; continuing as success.');
+            }
 
-            await connection.confirmTransaction(signature, 'confirmed');
+            if (signature) {
+                await connection.confirmTransaction(signature, 'confirmed');
+            }
 
             console.log('NFT listed successfully! Signature:', signature);
 
             // Log the listing transaction to database
             try {
-                await notifySolanaPayment(
-                    signature,
-                    walletPublicKey.toString(),
-                    price,
-                    selectedNft.publicKey,
-                    'LISTING'
-                );
-                console.log('Listing transaction logged to database');
+                if (signature) {
+                    await notifySolanaPayment(
+                        signature,
+                        walletPublicKey.toString(),
+                        price,
+                        selectedNft.publicKey,
+                        'LISTING'
+                    );
+                    console.log('Listing transaction logged to database');
+                } else {
+                    console.log('Listing completed without local signature (already processed case)');
+                }
             } catch (logError) {
                 console.warn('Failed to log listing transaction:', logError);
             }
