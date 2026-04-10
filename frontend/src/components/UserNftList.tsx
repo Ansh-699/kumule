@@ -147,6 +147,17 @@ export const UserNftList = () => {
 
             loadNfts();
         } catch (error) {
+            if (isAlreadyProcessedError(error)) {
+                console.warn('Listing already processed; treating as success.');
+                loadingToast.dismiss();
+                toast({
+                    title: "Listing Successful!",
+                    description: `Successfully listed ${selectedNft.name} for ${price} SOL.`,
+                });
+                loadNfts();
+                return;
+            }
+
             console.error('Error listing NFT:', error);
             loadingToast.dismiss();
             toast({

@@ -34,6 +34,11 @@ export const NftDetailPage = () => {
     const [listing, setListing] = useState<Listing | null>(null);
     const [isBuying, setIsBuying] = useState(false);
 
+    const isAlreadyProcessedError = (err: unknown): boolean => {
+        const message = err instanceof Error ? err.message : String(err);
+        return message.toLowerCase().includes('already been processed');
+    };
+
     useEffect(() => {
         const loadNftDetails = async () => {
             if (!id) return;
@@ -124,23 +129,41 @@ export const NftDetailPage = () => {
             const tx = VersionedTransaction.deserialize(new Uint8Array(txBuffer));
 
             const signedTx = await signTransaction(tx);
+            const signedTxBytes = signedTx.serialize();
 
-            const signature = await connection.sendRawTransaction(signedTx.serialize());
+            let signature: string | null = null;
+            try {
+                signature = await connection.sendRawTransaction(signedTxBytes, {
+                    skipPreflight: true,
+                    maxRetries: 3,
+                });
+            } catch (sendErr: unknown) {
+                if (!isAlreadyProcessedError(sendErr)) {
+                    throw sendErr;
+                }
+                console.warn('Purchase transaction already processed by RPC; continuing as success.');
+            }
 
-            await connection.confirmTransaction(signature, 'confirmed');
+            if (signature) {
+                await connection.confirmTransaction(signature, 'confirmed');
+            }
 
             console.log('Buy successful, signature:', signature);
 
             // Log the transaction to database
             try {
-                await notifySolanaPayment(
-                    signature,
-                    walletPublicKey.toString(),
-                    listing.price,
-                    listing.asset,
-                    'PURCHASE'
-                );
-                console.log('Transaction logged to database');
+                if (signature) {
+                    await notifySolanaPayment(
+                        signature,
+                        walletPublicKey.toString(),
+                        listing.price,
+                        listing.asset,
+                        'PURCHASE'
+                    );
+                    console.log('Transaction logged to database');
+                } else {
+                    console.log('Purchase completed without local signature (already processed case)');
+                }
             } catch (logError) {
                 console.warn('Failed to log transaction:', logError);
             }
@@ -154,6 +177,17 @@ export const NftDetailPage = () => {
             // Refresh data
             navigate('/my-nfts');
         } catch (error) {
+            if (isAlreadyProcessedError(error)) {
+                console.warn('Purchase already processed; treating as success.');
+                loadingToast.dismiss();
+                toast({
+                    title: "Purchase Successful!",
+                    description: `You successfully bought ${listing.name} for ${listing.price} SOL.`,
+                });
+                navigate('/my-nfts');
+                return;
+            }
+
             console.error('Error buying NFT:', error);
             loadingToast.dismiss();
             toast({
