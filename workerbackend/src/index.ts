@@ -951,5 +951,112 @@ app.get('/debug/db', async (c) => {
   }
 })
 
+// ==================== COMPATIBILITY v1 ENDPOINTS ====================
+// Mobile/API v1 compatibility layer for Flutter and other clients
+
+app.get('/api/v1/subscriptions/tiers', (c) => {
+  return c.json({
+    data: [
+      { id: 'free', name: 'Free', description: 'Explore Kumule basics', price: 0, currency: 'USD', interval: 'month', features: ['Browse marketplace', 'Basic event access'] },
+      { id: 'pro', name: 'Pro', description: 'For active creators and collectors', price: 9.99, currency: 'USD', interval: 'month', features: ['Priority drops', 'Advanced analytics', 'Creator rewards boost'] },
+      { id: 'premium', name: 'Premium', description: 'Full access for power users', price: 29.99, currency: 'USD', interval: 'month', features: ['VIP support', 'Premium events', 'Early access to launches'] }
+    ],
+    count: 3
+  })
+})
+
+app.get('/api/v1/app/config', (c) => {
+  return c.json({
+    app: {
+      name: 'Kumule NFT Marketplace',
+      version: '1.0.0',
+      environment: 'development',
+      api_base_url: 'https://kumele-backend.ansht.workers.dev'
+    },
+    feature_flags: {
+      web3_enabled: true,
+      subscriptions_enabled: true,
+      marketplace_enabled: true,
+      rewards_enabled: true
+    },
+    wallet: {
+      network: 'devnet',
+      provider: 'phantom',
+      requires_signature: true
+    }
+  })
+})
+
+app.get('/api/v1/hobbies/categories', (c) => {
+  return c.json({
+    data: [
+      { id: 'music', name: 'Music', icon: 'music_note' },
+      { id: 'gaming', name: 'Gaming', icon: 'sports_esports' },
+      { id: 'sports', name: 'Sports', icon: 'sports_soccer' },
+      { id: 'collectibles', name: 'Collectibles', icon: 'diamond' },
+      { id: 'art', name: 'Art', icon: 'palette' },
+      { id: 'tech', name: 'Tech', icon: 'memory' }
+    ],
+    count: 6
+  })
+})
+
+app.get('/api/v1/localization/strings', (c) => {
+  return c.json({
+    lang: 'en',
+    namespace: 'ui',
+    strings: {
+      app_title: 'Kumule',
+      marketplace_title: 'Marketplace',
+      rewards_title: 'Rewards',
+      connect_wallet: 'Connect Wallet',
+      buy_now: 'Buy Now',
+      claim_nft: 'Claim NFT',
+      subscriptions_title: 'Subscriptions',
+      loading: 'Loading',
+      retry: 'Retry',
+      cancel: 'Cancel'
+    },
+    count: 10
+  })
+})
+
+app.get('/api/v1/nfts/marketplace', async (c) => {
+  try {
+    const res = await getListings(c)
+    const body = await res.json() as { listings?: any[] }
+    const listings = body.listings || []
+    return c.json({ data: listings, count: listings.length })
+  } catch (error) {
+    console.error('v1 marketplace error:', error)
+    return c.json({ data: [], count: 0 })
+  }
+})
+
+app.get('/api/v1/payments/history', async (c) => {
+  const walletAddress = c.req.query('walletAddress')
+  if (!walletAddress) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+  try {
+    const connectionString = getConnectionString(c.env)
+    if (!connectionString) {
+      return c.json({ data: [], count: 0 })
+    }
+    const result = await withPrisma(connectionString, async (prisma) => {
+      const transactions = await prisma.transaction.findMany({
+        where: { walletAddress },
+        orderBy: { createdAt: 'desc' },
+        take: 50
+      })
+      return transactions
+    })
+    return c.json({ data: result, count: result.length })
+  } catch (error) {
+    console.error('v1 payments history error:', error)
+    return c.json({ data: [], count: 0 })
+  }
+})
+
 export default app
 
