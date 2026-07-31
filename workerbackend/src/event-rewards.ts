@@ -4,6 +4,7 @@ import { getUmi } from './umi'
 import { transferV1 } from '@metaplex-foundation/mpl-core'
 import { publicKey as umiPublicKey, keypairIdentity } from '@metaplex-foundation/umi'
 import { base58 } from '@metaplex-foundation/umi/serializers'
+import { verifySolanaTransaction } from './webhook'
 
 // Claim fee in SOL (covers NFT transfer gas)
 const CLAIM_FEE_SOL = 0.002 // ~0.002 SOL for transfer
@@ -338,10 +339,22 @@ export const claimEventReward = async (c: Context<{ Bindings: CloudflareBindings
                 }
             }
 
-            // TODO: Verify fee transaction on-chain (optional but recommended)
-            // For now, we trust the provided txHash
+            // The NFT transfer below is signed and sent with the admin key, so an unverified
+            // feeTxHash meant any string ("x") claimed a real NFT for free.
+            const feeOk = await verifySolanaTransaction(
+                c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com',
+                feeTxHash
+            )
+            if (!feeOk) {
+                return { error: 'Claim fee transaction could not be verified on-chain' }
+            }
 
-            console.log(`[EVENT-REWARDS] Fee paid, transferring NFT. feeTxHash=${feeTxHash}`)
+            // ponytail: verifies the fee tx exists and succeeded, not that it paid CLAIM_FEE_SOL to
+            // event.creatorWallet, and not that it is single-use - so any successful signature the
+            // caller knows is currently accepted, and one fee can cover a gold+silver+bronze sweep.
+            // Upgrade when rewards have value: parse the tx for a transfer of >= CLAIM_FEE_SOL to
+            // event.creatorWallet, and add a unique feeTxHash column on EventRewardClaim.
+            console.log(`[EVENT-REWARDS] Fee verified, transferring NFT. feeTxHash=${feeTxHash}`)
 
             // Build NFT transfer transaction
             const rpcUrl = c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'

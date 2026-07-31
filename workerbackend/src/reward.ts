@@ -477,61 +477,34 @@ export const claimNftReward = async (c: Context<{ Bindings: CloudflareBindings }
                 }
             }
 
-            // Transfer NFT from admin vault to user with RPC fallback
+            // The NFT sits in the admin vault, so only the admin key can authorise the transfer and
+            // pay its fee. Returning an unsigned tx here was unusable: the user's wallet cannot sign
+            // for the admin. Sign and send server-side, same as claimEventReward does.
             const { transferV1 } = await import('@metaplex-foundation/mpl-core')
-            const { createNoopSigner, signerIdentity, publicKey: umiPublicKey } = await import('@metaplex-foundation/umi')
+            const { keypairIdentity, publicKey: umiPublicKey } = await import('@metaplex-foundation/umi')
+            const { base58 } = await import('@metaplex-foundation/umi/serializers')
 
-            const adminKey = umiPublicKey(rewardNft.adminWallet)
+            const privateKeyBase58 = c.env.ADMIN_WALLET_PRIVATE_KEY
+            if (!privateKeyBase58) {
+                return { error: 'Admin wallet not configured for transfers' }
+            }
+
             const userKey = umiPublicKey(walletAddress)
             const assetKey = umiPublicKey(rewardNft.nftAsset)
 
-            const adminSigner = createNoopSigner(adminKey)
-            
-            let base64Tx: string
-            
-            // Try to build transaction with RPC fallback
-            try {
-                umi.use(signerIdentity(adminSigner, true))
+            const adminKeypair = umi.eddsa.createKeypairFromSecretKey(base58.serialize(privateKeyBase58))
+            umi = umi.use(keypairIdentity(adminKeypair))
 
-                const builder = transferV1(umi, {
-                    asset: assetKey,
-                    newOwner: userKey,
-                    authority: adminSigner,
-                })
+            const builder = transferV1(umi, { asset: assetKey, newOwner: userKey })
+            const tx = await (await builder.setLatestBlockhash(umi)).build(umi)
+            const signedTx = await umi.identity.signTransaction(tx)
+            const signature = await umi.rpc.sendTransaction(signedTx)
+            const transferTxHash = base58.deserialize(signature)[0]
 
-                const builderWithBlockhash = await builder
-                    .setFeePayer(adminSigner)
-                    .setLatestBlockhash(umi)
+            console.log('Reward NFT transferred, txHash:', transferTxHash)
 
-                const tx = await builderWithBlockhash.build(umi)
-                const serializedTx = umi.transactions.serialize(tx)
-                base64Tx = Buffer.from(serializedTx).toString('base64')
-            } catch (rpcError: any) {
-                // If RPC fails, try public devnet RPC
-                if (rpcError.message?.includes('401') || rpcError.message?.includes('Invalid API key') || rpcError.message?.includes('Unauthorized') || rpcError.message?.includes('failed to get recent blockhash')) {
-                    console.log('RPC failed in claimNftReward, trying public devnet RPC...')
-                    rpcUrl = 'https://api.devnet.solana.com'
-                    umi = getUmi(rpcUrl)
-                    umi.use(signerIdentity(adminSigner, true))
-
-                    const builder = transferV1(umi, {
-                        asset: assetKey,
-                        newOwner: userKey,
-                        authority: adminSigner,
-                    })
-
-                    const builderWithBlockhash = await builder
-                        .setFeePayer(adminSigner)
-                        .setLatestBlockhash(umi)
-
-                    const tx = await builderWithBlockhash.build(umi)
-                    const serializedTx = umi.transactions.serialize(tx)
-                    base64Tx = Buffer.from(serializedTx).toString('base64')
-                } else {
-                    throw rpcError
-                }
-            }
-
+            // Only now debit points and burn supply - the transfer has actually landed. Doing this
+            // before the send meant a failed transfer still cost the user their points.
             // Create claimed reward record
             const claimedReward = await prisma.claimedReward.create({
                 data: {
@@ -542,6 +515,7 @@ export const claimNftReward = async (c: Context<{ Bindings: CloudflareBindings }
                     rewardType: rewardNft.rewardType,
                     metadata: JSON.stringify({
                         rewardNftName: rewardNft.name,
+                        txHash: transferTxHash,
                         claimedAt: new Date().toISOString()
                     })
                 }
@@ -572,7 +546,7 @@ export const claimNftReward = async (c: Context<{ Bindings: CloudflareBindings }
 
             return {
                 success: true,
-                transaction: base64Tx,
+                txHash: transferTxHash,
                 claimedReward: {
                     id: claimedReward.id,
                     nftAsset: claimedReward.nftAsset,

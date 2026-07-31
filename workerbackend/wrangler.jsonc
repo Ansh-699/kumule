@@ -13,11 +13,13 @@
   "vars": {
     "COINBASE_API_KEY_NAME": "29b6eb08-e2e9-4276-9a64-603cab86ab69"
   },
+  // Local dev connection string comes from the environment, never this file - it is committed.
+  // Set it in .dev.vars (git-ignored) or export:
+  //   WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgresql://..."
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
-      "id": "51d6e914d1a24680a392ea585b7e8539",
-      "localConnectionString": "postgresql://neondb_owner:npg_vt7iwzOL0Efe@ep-patient-credit-a1mtuesi-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+      "id": "51d6e914d1a24680a392ea585b7e8539"
     }
   ],
   // "kv_namespaces": [

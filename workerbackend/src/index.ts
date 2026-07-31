@@ -109,7 +109,7 @@ app.get('/docs', (c) => {
     <strong>🔐 Wallet Integration:</strong> Connect your Phantom wallet to test NFT minting and transfers. 
     Transactions requiring signatures will prompt your wallet.
     <br><br>
-    <strong>🔑 Admin Endpoints:</strong> Use <code>X-Admin-API-Key: anshtyagi</code> header. Click "Authorize" button below and enter: <strong>anshtyagi</strong>
+    <strong>🔑 Admin Endpoints:</strong> Send the <code>X-Admin-API-Key</code> header. Click "Authorize" below and paste the key you were issued privately — it is not published here.
     <br><br>
     <strong>📋 Test Data:</strong> Most fields are pre-filled with working devnet data. Your wallet: <code>anshxnbjGiUpsZpnx3c6LrK2vt8zt54vLMvY3C7Locm</code>
   </div>
@@ -482,16 +482,16 @@ app.get('/api-docs', (c) => {
     <p>Admin-protected endpoints require the <code>X-Admin-API-Key</code> header.</p>
     
     <div class="info-box warning">
-        <h4>🔑 Admin API Key for Testing</h4>
-        <p>Use this key for all admin endpoints:</p>
-        <pre><code>X-Admin-API-Key: anshtyagi</code></pre>
+        <h4>🔑 Admin API Key</h4>
+        <p>Admin endpoints require a key issued privately. It is deliberately not published on this page.</p>
+        <pre><code>X-Admin-API-Key: &lt;your-issued-key&gt;</code></pre>
     </div>
 
     <h4>How to set in Swagger UI:</h4>
     <ol style="margin-left: 20px; color: #4b5563;">
         <li>Go to <code>https://kumele-backend.ansht.workers.dev/docs</code></li>
         <li>Click the <strong>"Authorize"</strong> button (🔓)</li>
-        <li>Enter: <code>anshtyagi</code></li>
+        <li>Paste the key you were issued</li>
         <li>Click "Authorize" to save</li>
     </ol>
 
@@ -611,7 +611,7 @@ app.get('/api-docs', (c) => {
     <h3>6.1 Using Swagger UI (Recommended)</h3>
     <ol style="margin-left: 20px; color: #4b5563;">
         <li>Open <a href="/docs">/docs</a></li>
-        <li>Click "Authorize" and enter: <code>anshtyagi</code></li>
+        <li>Click "Authorize" and paste your issued admin key</li>
         <li>Find an endpoint and click "Try it out"</li>
         <li>Fields are pre-filled with test data - just click "Execute"</li>
     </ol>
@@ -625,7 +625,7 @@ app.get('/api-docs', (c) => {
     <pre><code>curl "https://kumele-backend.ansht.workers.dev/owner?owner=anshxnbjGiUpsZpnx3c6LrK2vt8zt54vLMvY3C7Locm"</code></pre>
 
     <h4>Admin Dashboard (with auth)</h4>
-    <pre><code>curl -H "X-Admin-API-Key: anshtyagi" https://kumele-backend.ansht.workers.dev/api/admin/dashboard</code></pre>
+    <pre><code>curl -H "X-Admin-API-Key: $KUMELE_ADMIN_KEY" https://kumele-backend.ansht.workers.dev/api/admin/dashboard</code></pre>
 
     <h4>Mint NFT</h4>
     <pre><code>curl -X POST https://kumele-backend.ansht.workers.dev/mint \\
@@ -734,7 +734,7 @@ app.get('/api-docs', (c) => {
         </div>
         <div class="info-box warning">
             <h4>🔑 Admin Key</h4>
-            <code>X-Admin-API-Key: anshtyagi</code>
+            <code>X-Admin-API-Key: &lt;issued privately&gt;</code>
         </div>
     </div>
     <div class="info-box">
@@ -769,15 +769,12 @@ app.get('/test', (c) => {
 
 // CORS middleware with explicit origin handling
 app.use('*', async (c, next) => {
-  const origin = c.req.header('origin')
+  // Reflecting any origin with Allow-Credentials:true meant every site a user visits could make
+  // credentialed calls to this API. Nothing here is cookie-authenticated, so a plain public
+  // wildcard is both correct and safe; add an explicit allowlist here if cookies are ever added.
   const corsHeaders: Record<string, string> = {}
-  
-  if (origin) {
-    corsHeaders['Access-Control-Allow-Origin'] = origin
-    corsHeaders['Access-Control-Allow-Credentials'] = 'true'
-  } else {
-    corsHeaders['Access-Control-Allow-Origin'] = '*'
-  }
+
+  corsHeaders['Access-Control-Allow-Origin'] = '*'
   corsHeaders['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
   corsHeaders['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Admin-API-Key'
   

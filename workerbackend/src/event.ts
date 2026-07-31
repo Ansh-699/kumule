@@ -142,7 +142,7 @@ export const listEvents = async (c: Context<{ Bindings: CloudflareBindings }>) =
 export const joinEvent = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     try {
         const eventId = c.req.param('id')
-        const { userId, walletAddress, amount, txHash } = await c.req.json()
+        const { walletAddress, amount, txHash } = await c.req.json()
         if (!eventId || !walletAddress) {
             return c.json({ error: 'Missing required fields (eventId and walletAddress required)' }, 400)
         }
@@ -151,28 +151,13 @@ export const joinEvent = async (c: Context<{ Bindings: CloudflareBindings }>) =>
             return c.json({ error: 'Database not configured' }, 500)
         }
         const entry = await withPrisma(connectionString, async (prisma) => {
-            // Find or create user based on wallet address
-            let resolvedUserId = userId
-            if (!resolvedUserId) {
-                // Try to find existing user by wallet
-                const existingWallet = await prisma.wallet.findFirst({
-                    where: { walletAddress }
-                })
-                if (existingWallet) {
-                    resolvedUserId = existingWallet.userId
-                } else {
-                    // Create new user and wallet
-                    const newUser = await prisma.user.create({
-                        data: {
-                            wallets: {
-                                create: { walletAddress }
-                            }
-                        }
-                    })
-                    resolvedUserId = newUser.id
-                }
-            }
-            
+            // Always resolve the user from the wallet. The old inline version accepted a
+            // caller-supplied userId (so anyone could file an entry against another account) and
+            // its wallet create omitted the required walletType, which made every *first-time*
+            // wallet fail to join. ensureUserExists already does both correctly.
+            const resolvedUserId = await ensureUserExists(prisma, walletAddress)
+
+
             // Check if already joined
             const existingEntry = await prisma.eventEntry.findFirst({
                 where: { eventId, walletAddress }

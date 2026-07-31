@@ -7,4 +7,17 @@ COINBASE_API_KEY_NAME="your-api-key-name"
 COINBASE_API_KEY_PRIVATE_KEY="your-api-key-private-key"
 
 # Get your Coinbase Commerce API key from: https://commerce.coinbase.com/dashboard/settings
-COINBASE_COMMERCE_API_KEY="b08b734c-10fd-444b-8f4a-6fd743040559"
+COINBASE_COMMERCE_API_KEY="your-coinbase-commerce-api-key"
+
+# Coinbase Commerce webhook shared secret - webhooks are rejected without it
+COINBASE_WEBHOOK_SECRET="your-coinbase-webhook-shared-secret"
+
+# Admin API key for /api/admin/* - no default, admin routes 503 until this is set
+ADMIN_API_KEY="generate-a-long-random-value"
+
+# Base58 admin wallet private key, used to sign reward NFT transfers
+ADMIN_WALLET_PRIVATE_KEY="your-base58-admin-wallet-private-key"
+
+# Local Hyperdrive connection string (also settable as
+# WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE)
+DATABASE_URL="postgresql://user:password@host/db?sslmode=require"

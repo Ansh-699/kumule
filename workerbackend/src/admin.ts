@@ -1,23 +1,27 @@
 import { Context } from 'hono'
 import { withPrisma, getConnectionString } from './db'
 
-// Simple API key authentication middleware
-export const adminAuth = async (c: Context<{ Bindings: CloudflareBindings }>, next: () => Promise<void>) => {
-    const apiKey = c.req.header('X-Admin-API-Key') || c.req.query('apiKey')
-    
-    // Support both env key and a fallback hardcoded key for development
-    const envKey = c.env.ADMIN_API_KEY
-    const fallbackKey = 'admin-secret-key-change-in-production'
-    
-    console.log('Admin auth check:', { 
-        providedKey: apiKey ? apiKey.substring(0, 10) + '...' : 'none', 
-        envKey: envKey ? envKey.substring(0, 10) + '...' : 'none',
-        hasEnvKey: !!envKey
-    })
+// Constant-time string compare so a wrong key leaks no timing signal.
+const timingSafeEqual = (a: string, b: string): boolean => {
+    if (a.length !== b.length) return false
+    let diff = 0
+    for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+    return diff === 0
+}
 
-    // Accept env key, fallback key, or password "anshtyagi"
-    const passwordKey = 'anshtyagi'
-    if (!apiKey || (apiKey !== envKey && apiKey !== fallbackKey && apiKey !== passwordKey)) {
+// API key authentication middleware.
+// Header only: a query param would land in CF request logs, browser history and Referer headers.
+export const adminAuth = async (c: Context<{ Bindings: CloudflareBindings }>, next: () => Promise<void>) => {
+    const apiKey = c.req.header('X-Admin-API-Key')
+    const envKey = c.env.ADMIN_API_KEY
+
+    // No key configured => admin surface stays closed rather than falling back to a shared default.
+    if (!envKey) {
+        console.error('ADMIN_API_KEY is not configured; refusing all admin requests')
+        return c.json({ error: 'Admin API is not configured.' }, 503)
+    }
+
+    if (!apiKey || !timingSafeEqual(apiKey, envKey)) {
         return c.json({ error: 'Unauthorized. Invalid admin API key.' }, 401)
     }
 

@@ -100,19 +100,21 @@ export const handleWebhook = async (c: Context<{ Bindings: CloudflareBindings }>
     // Get raw body for signature verification
     const rawBody = await c.req.raw.clone().text()
     
-    // Verify signature if secret is configured
-    let signatureVerified = false
-    if (signature && secret) {
-        signatureVerified = await verifyWebhookSignature(rawBody, signature, secret)
-        if (!signatureVerified) {
-            console.warn('Webhook signature verification failed')
-            // In production, you might want to reject unverified webhooks
-            // return c.text('Invalid signature', 401)
-        }
-    } else {
-        console.warn('Missing signature or secret for webhook - proceeding without verification')
+    // A webhook marks a Transaction COMPLETED, and mint.ts trusts that status to release a paid
+    // mint. An unverified payload is therefore a free-mint primitive - reject, never "log and continue".
+    if (!secret) {
+        console.error('COINBASE_WEBHOOK_SECRET is not configured; refusing webhook')
+        return c.text('Webhook not configured', 503)
     }
-    
+    if (!signature) {
+        return c.text('Missing X-CC-Webhook-Signature', 401)
+    }
+    const signatureVerified = await verifyWebhookSignature(rawBody, signature, secret)
+    if (!signatureVerified) {
+        console.warn('Webhook signature verification failed - rejecting')
+        return c.text('Invalid signature', 401)
+    }
+
     let body: any
     try {
         body = JSON.parse(rawBody)
@@ -269,16 +271,13 @@ async function handleSolanaPaymentNotification(
     c: Context<{ Bindings: CloudflareBindings }>,
     body: any
 ) {
-    const {
-        solanaSignature,
-        txSignature,
-        walletAddress,
-        amount,
-        chargeId,
-        transactionType = 'PAYMENT'
-    } = body
-    
+    // This endpoint is unauthenticated, so nothing the caller sends may decide *which* record it
+    // writes or what kind of record it is. Letting the caller pick chargeId/transactionType here
+    // let anyone forge a settled PAYMENT row for an arbitrary charge and mint against it.
+    const { solanaSignature, txSignature, walletAddress, amount } = body
+
     const signature = solanaSignature || txSignature
+    const transactionType = 'SOLANA_TRANSFER'
     
     if (!signature) {
         return c.json({ error: 'Missing Solana signature' }, 400)
@@ -300,7 +299,7 @@ async function handleSolanaPaymentNotification(
             await prisma.paymentLog.create({
                 data: {
                     eventType: 'solana:payment',
-                    chargeId: chargeId || signature,
+                    chargeId: signature,
                     walletAddress: walletAddress,
                     txHash: signature,
                     amount: amount ? parseFloat(amount) : null,
@@ -312,8 +311,9 @@ async function handleSolanaPaymentNotification(
                 }
             })
             
-            // Create or update transaction
-            const txId = chargeId || `sol_${signature.substring(0, 16)}`
+            // Create or update transaction. Keyed on the full signature so the same notification is
+            // idempotent and cannot collide with (or overwrite) a Coinbase charge id.
+            const txId = `sol_${signature}`
             const existingTx = await prisma.transaction.findUnique({
                 where: { transactionId: txId }
             })
@@ -368,7 +368,7 @@ async function handleSolanaPaymentNotification(
 }
 
 // Verify a Solana transaction exists and is confirmed
-async function verifySolanaTransaction(rpcUrl: string, signature: string): Promise<boolean> {
+export async function verifySolanaTransaction(rpcUrl: string, signature: string): Promise<boolean> {
     if (!rpcUrl) {
         console.warn('No Solana RPC URL configured')
         return false

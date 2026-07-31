@@ -233,7 +233,6 @@ async function main() {
                 eventId: event1.id,
                 walletAddress: user2.wallets[0].walletAddress,
                 reason: 'Event was cancelled without notice',
-                description: 'The event organizer cancelled the NFT Art Exhibition without any prior notification. I paid the entry fee and want a refund.',
                 amount: 0.5,
                 status: 'PENDING'
             },
@@ -242,7 +241,6 @@ async function main() {
                 eventId: event1.id,
                 walletAddress: user3.wallets[0].walletAddress,
                 reason: 'Event did not meet expectations',
-                description: 'The event quality was much lower than advertised. Only 2 artists showed up instead of the promised 10.',
                 amount: 0.5,
                 status: 'APPROVED',
                 resolvedAt: new Date()
@@ -252,7 +250,6 @@ async function main() {
                 eventId: event2.id,
                 walletAddress: user1.wallets[0].walletAddress,
                 reason: 'Technical issues during event',
-                description: 'The gaming tournament had severe lag issues and I was unable to participate properly.',
                 amount: 1.0,
                 status: 'REJECTED',
                 resolvedAt: new Date()
@@ -262,7 +259,6 @@ async function main() {
                 eventId: event2.id,
                 walletAddress: user2.wallets[0].walletAddress,
                 reason: 'Unfair judging',
-                description: 'The tournament results were clearly biased. I request a review of the judging process.',
                 amount: 1.0,
                 status: 'PENDING'
             }

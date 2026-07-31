@@ -87,30 +87,41 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                 return c.text('Missing chargeId for Coinbase payment', 402)
             }
 
-            let paymentVerified = false;
-            
-            // Check DB first (populated by webhook)
             const connectionString = getConnectionString(c.env)
-            if (connectionString) {
-                try {
-                    const transaction = await withPrisma(connectionString, async (prisma) => {
-                        return prisma.transaction.findUnique({
-                            where: { transactionId: chargeId }
-                        })
-                    })
-                    
-                    if (transaction && (transaction.status === 'COMPLETED' || transaction.status === 'CONFIRMED')) {
-                        paymentVerified = true;
-                    }
-                } catch (dbError) {
-                    console.warn('Database check failed, falling back to API check:', dbError)
-                }
+            if (!connectionString) {
+                return c.text('Payment verification unavailable', 503)
             }
 
-            if (!paymentVerified) {
-                // Fallback to API check if not in DB yet
-                const paymentStatus = await checkChargeStatus(chargeId, c.env.COINBASE_COMMERCE_API_KEY)
+            // The charge row is created by createCharge, so a missing row means the caller invented
+            // a chargeId. Status alone is not proof of payment: it must also be a real PAYMENT
+            // charge, belong to the wallet that is minting, and not already have been spent on
+            // another NFT - otherwise one paid charge mints unlimited NFTs for anyone who knows it.
+            const transaction = await withPrisma(connectionString, async (prisma) => {
+                return prisma.transaction.findUnique({ where: { transactionId: chargeId } })
+            })
 
+            if (!transaction) {
+                logSecurityEvent('unauthorized_access', { actor: owner, target: chargeId, metadata: { reason: 'unknown_charge' } })
+                return c.text('Unknown chargeId', 402)
+            }
+            if (transaction.transactionType !== 'PAYMENT') {
+                logSecurityEvent('unauthorized_access', { actor: owner, target: chargeId, metadata: { reason: 'charge_type_mismatch', type: transaction.transactionType } })
+                return c.text('chargeId is not a payment charge', 402)
+            }
+            if (transaction.walletAddress !== owner) {
+                logSecurityEvent('unauthorized_access', { actor: owner, target: chargeId, metadata: { reason: 'charge_wallet_mismatch' } })
+                return c.text('chargeId does not belong to this wallet', 403)
+            }
+            if (transaction.nftId) {
+                logSecurityEvent('unauthorized_access', { actor: owner, target: chargeId, metadata: { reason: 'charge_reuse' } })
+                return c.text('chargeId has already been used to mint', 409)
+            }
+
+            const settled = transaction.status === 'COMPLETED' || transaction.status === 'CONFIRMED'
+            if (!settled) {
+                // Webhook may not have landed yet - ask Coinbase directly, but only for a charge
+                // that already passed the ownership checks above.
+                const paymentStatus = await checkChargeStatus(chargeId, c.env.COINBASE_COMMERCE_API_KEY)
                 if (paymentStatus.status !== 'COMPLETED' && paymentStatus.status !== 'CONFIRMED') {
                     return c.text(`Payment not completed. Status: ${paymentStatus.status}`, 402)
                 }

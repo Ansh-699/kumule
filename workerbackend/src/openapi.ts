@@ -20,8 +20,10 @@ This API provides endpoints for:
 - **Albums**: Music NFT album management
 
 ### Authentication
-- Admin endpoints require \`X-Admin-API-Key\` header (use: \`anshtyagi\` for testing)
+- Admin endpoints require the \`X-Admin-API-Key\` header, using the key issued to you privately
 - Wallet operations require Phantom/Solana wallet signing
+- **No other endpoint is authenticated.** \`walletAddress\` is an unverified request parameter,
+  not proof of wallet ownership — see the integration notes before relying on it for identity.
 
 ### Wallet Integration
 Use the "Connect Wallet" button above to connect your Phantom wallet for signing transactions.
@@ -1075,31 +1077,62 @@ Pre-configured with real data from devnet:
                 tags: ['Rewards'],
                 summary: 'Claim NFT Reward',
                 operationId: 'claimReward',
+                description: 'Transfers a vault NFT to the user. The server signs and submits the '
+                    + 'transfer, so the response is synchronous and the client signs nothing. '
+                    + 'Points are debited only after the transfer lands.',
                 requestBody: {
                     required: true,
                     content: {
                         'application/json': {
                             schema: {
                                 type: 'object',
-                                required: ['walletAddress', 'nftAsset', 'requiredPoints'],
+                                required: ['walletAddress', 'rewardNftId'],
                                 properties: {
                                     walletAddress: { type: 'string', example: 'anshxnbjGiUpsZpnx3c6LrK2vt8zt54vLMvY3C7Locm' },
-                                    nftAsset: { type: 'string', example: 'AM7zm7zpWysGJfdJcaPRLm25y4Zjw5FUqC1H1PzPq2S9' },
-                                    requiredPoints: { type: 'integer', example: 100 },
-                                    rewardType: { type: 'string', default: 'MUSIC_NFT' }
+                                    rewardNftId: { type: 'string', description: 'RewardNft.id from GET /api/rewards/available (a UUID, not the on-chain asset address)', example: '9f1c2b64-6f0a-4d3e-9c11-0b2d5a7e4c88' }
                                 }
                             },
                             example: {
                                 walletAddress: 'anshxnbjGiUpsZpnx3c6LrK2vt8zt54vLMvY3C7Locm',
-                                nftAsset: 'AM7zm7zpWysGJfdJcaPRLm25y4Zjw5FUqC1H1PzPq2S9',
-                                requiredPoints: 100,
-                                rewardType: 'MUSIC_NFT'
+                                rewardNftId: '9f1c2b64-6f0a-4d3e-9c11-0b2d5a7e4c88'
                             }
                         }
                     }
                 },
                 responses: {
-                    '200': { description: 'Reward claimed' }
+                    '200': {
+                        description: 'Reward claimed and NFT transferred',
+                        content: {
+                            'application/json': {
+                                schema: {
+                                    type: 'object',
+                                    properties: {
+                                        success: { type: 'boolean' },
+                                        txHash: { type: 'string', description: 'Signature of the completed transfer' },
+                                        claimedReward: {
+                                            type: 'object',
+                                            properties: {
+                                                id: { type: 'string' },
+                                                nftAsset: { type: 'string' },
+                                                pointsUsed: { type: 'integer' },
+                                                rewardType: { type: 'string' },
+                                                createdAt: { type: 'string', format: 'date-time' }
+                                            }
+                                        },
+                                        rewardAccount: {
+                                            type: 'object',
+                                            properties: {
+                                                interactionCount: { type: 'integer' },
+                                                claimedNfts: { type: 'integer' }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    '400': { description: 'Insufficient points, out of supply, or reward inactive' },
+                    '404': { description: 'User or reward account not found' }
                 }
             }
         },
@@ -1108,8 +1141,23 @@ Pre-configured with real data from devnet:
                 tags: ['Rewards'],
                 summary: 'Get Available Rewards',
                 operationId: 'getAvailableRewards',
+                description: 'Returns minted reward NFTs and listed drafts in one array, sorted by '
+                    + 'requiredPoints. Draft entries carry isDraft:true and an empty nftAsset - they '
+                    + 'are not minted yet and cannot be claimed.',
                 responses: {
-                    '200': { description: 'List of available rewards' }
+                    '200': {
+                        description: 'List of available rewards',
+                        content: {
+                            'application/json': {
+                                schema: {
+                                    type: 'object',
+                                    properties: {
+                                        rewards: { type: 'array', items: { $ref: '#/components/schemas/AvailableReward' } }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         },
@@ -1804,6 +1852,25 @@ Pre-configured with real data from devnet:
                     },
                     hasJoined: { type: 'boolean' },
                     claimFee: { type: 'number' }
+                }
+            },
+            // Shape returned by GET /api/rewards/available. Distinct from EventRewardNft: that one
+            // is the per-event medal, this is the global loyalty reward (and listed drafts).
+            AvailableReward: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string', description: 'Pass this as rewardNftId to POST /api/rewards/claim' },
+                    name: { type: 'string' },
+                    description: { type: 'string', nullable: true },
+                    requiredPoints: { type: 'integer' },
+                    rewardType: { type: 'string', example: 'MUSIC_NFT' },
+                    nftAsset: { type: 'string', description: 'On-chain asset address; empty string for drafts' },
+                    imageUrl: { type: 'string', nullable: true },
+                    metadataUri: { type: 'string' },
+                    totalSupply: { type: 'integer' },
+                    claimedCount: { type: 'integer' },
+                    isActive: { type: 'boolean' },
+                    isDraft: { type: 'boolean', description: 'Present and true only on unminted drafts; these are not claimable' }
                 }
             },
             EventRewardNft: {

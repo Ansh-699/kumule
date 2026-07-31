@@ -13,6 +13,7 @@ declare namespace Cloudflare {
         DATABASE_URL: string;
         PUBLIC_URL?: string; // Public base URL for metadata/image URLs (e.g., https://your-worker.workers.dev or https://your-domain.com)
         COINBASE_WEBHOOK_SECRET: string;
+        ADMIN_API_KEY: string; // Admin API key for /api/admin/*; admin routes 503 until it is set
         ADMIN_WALLET_PRIVATE_KEY: string; // Admin wallet private key (base58) for auto-minting reward NFTs
         HYPERDRIVE: Hyperdrive;
         NFT_IMAGES: R2Bucket; // R2 bucket for NFT images and metadata
