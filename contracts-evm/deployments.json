@@ -1,0 +1,28 @@
+{
+  "baseSepolia": {
+    "chainId": 84532,
+    "rpcUrl": "https://base-sepolia-rpc.publicnode.com",
+    "rpcNote": "sepolia.base.org returns stale reads right after a write; use publicnode for scripted flows",
+    "explorer": "https://sepolia.basescan.org",
+    "KumuleNFT": {
+      "proxy": "0x416e7Fd93fc2210540AAC1c1cC17a851148DfEBD",
+      "implementation": "0x0f6C9F2226287259B414a20455dFa83140E9E7e9"
+    },
+    "KumuleMarket": {
+      "proxy": "0x032774De36621265dc21056026372D7bA6f477eC",
+      "implementation": "0x79C2A183D073a58744E1749c6E5Fbb0C46DdA0Ef",
+      "feeBps": 250,
+      "maxFeeBps": 1000
+    },
+    "owner": "0xbE0E9cC99514BDbB3Bc22EeD19d9978Ce577c1F4",
+    "treasury": "0xbE0E9cC99514BDbB3Bc22EeD19d9978Ce577c1F4",
+    "deployedAt": "2026-08-12"
+  },
+  "solanaDevnet": {
+    "cluster": "devnet",
+    "nftmarketplaceProgram": "3ozh4TQJbeyXFUuXsj7fYmHB5aCVkg24cZN5zZmigR44",
+    "upgradeAuthority": "A5sV4PkkVM4gm3rejACvKFgxEMmj8ouGsffSKT5qYVc8",
+    "medalVault": "3hrnj13sXVzJpqmSzaczEXSR4H7gAFLBu5w3Zqc9nEyV",
+    "mplCore": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+  }
+}
