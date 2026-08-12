@@ -1,22 +1,18 @@
 import { PrismaClient } from '@prisma/client'
 import { PrismaNeon } from '@prisma/adapter-neon'
+import { Chain, normalizeAddress, isValidAddress } from './chains'
 
-// Create Prisma client using a connection string
-// Works with both DATABASE_URL and Hyperdrive connectionString
-export const getPrisma = (connectionString: string) => {
-    const adapter = new PrismaNeon({ connectionString })
-    const prisma = new PrismaClient({ adapter })
-    return prisma
-}
-
-// Helper to execute database operations with proper cleanup
+/**
+ * Run a unit of work against the database and always release the connection.
+ *
+ * Workers get a fresh isolate per request, so a client is built per call rather than kept
+ * as module state - a cached client would outlive its isolate and hand back a dead socket.
+ */
 export const withPrisma = async <T>(
     connectionString: string,
     fn: (prisma: PrismaClient) => Promise<T>
 ): Promise<T> => {
-    const adapter = new PrismaNeon({ connectionString })
-    const prisma = new PrismaClient({ adapter })
-    
+    const prisma = new PrismaClient({ adapter: new PrismaNeon({ connectionString }) })
     try {
         return await fn(prisma)
     } finally {
@@ -24,50 +20,78 @@ export const withPrisma = async <T>(
     }
 }
 
-// Helper to get connection string from environment
-// For local development, DATABASE_URL works better
-// For production, Hyperdrive provides connection pooling
+/**
+ * Hyperdrive first in production for pooling, DATABASE_URL otherwise. Returns '' rather than
+ * throwing so callers can answer 503 instead of surfacing a stack trace.
+ *
+ * Note for CLI work: Neon's `channel_binding=require` breaks the Prisma CLI (P1001) even
+ * though this runtime adapter handles it. Strip that parameter for `prisma migrate` commands.
+ */
 export const getConnectionString = (env: CloudflareBindings): string => {
-    // For local dev, prefer DATABASE_URL (Hyperdrive local emulation has issues)
-    if (env.DATABASE_URL) {
-        console.log('DB: Using DATABASE_URL')
-        return env.DATABASE_URL
-    }
-    // In production, use Hyperdrive if available
-    if (env.HYPERDRIVE?.connectionString) {
-        console.log('DB: Using Hyperdrive')
-        return env.HYPERDRIVE.connectionString
-    }
-    console.error('DB: No connection string available')
+    if (env.HYPERDRIVE?.connectionString) return env.HYPERDRIVE.connectionString
+    if (env.DATABASE_URL) return env.DATABASE_URL
+    console.error('DB: no connection string configured')
     return ''
 }
 
-// Shared helper to ensure a user exists in the database (find by wallet or create)
-// This eliminates duplicate code across escrow.ts, event.ts, reward.ts, dispute.ts, etc.
-export async function ensureUserExists(prisma: PrismaClient, walletAddress: string): Promise<string> {
-    let user = await prisma.user.findFirst({
-        where: {
-            wallets: {
-                some: { walletAddress: walletAddress }
-            }
-        },
-        include: { wallets: true }
-    });
-
-    if (!user) {
-        console.log('DB: Creating new user for wallet', walletAddress)
-        user = await prisma.user.create({
-            data: {
-                wallets: {
-                    create: {
-                        walletAddress: walletAddress,
-                        walletType: 'solana'
-                    }
-                }
-            },
-            include: { wallets: true }
-        });
+/**
+ * Find or create the user owning `address` on `chain`, returning the user id.
+ *
+ * Uniqueness is (chain, address), not address alone, so one person can hold a Solana wallet
+ * and an EVM wallet under a single user - the entire point of a multi-chain marketplace.
+ * EVM addresses are normalised first, because a checksummed and a lowercased form of the same
+ * wallet would otherwise create two users.
+ */
+export const ensureUser = async (
+    prisma: PrismaClient,
+    chain: Chain,
+    address: string
+): Promise<string> => {
+    if (!isValidAddress(chain, address)) {
+        throw new Error(`not a valid ${chain} address: ${address}`)
     }
+    const addr = normalizeAddress(chain, address)
 
-    return user.id
+    const existing = await prisma.wallet.findUnique({
+        where: { chain_address: { chain, address: addr } },
+        select: { userId: true },
+    })
+    if (existing) return existing.userId
+
+    // A concurrent request may win the race between the check above and this create; the
+    // unique constraint is what actually guarantees one row, so treat a conflict as success.
+    try {
+        const user = await prisma.user.create({
+            data: { wallets: { create: { chain, address: addr, isPrimary: true } } },
+            select: { id: true },
+        })
+        return user.id
+    } catch (e: any) {
+        if (e?.code === 'P2002') {
+            const w = await prisma.wallet.findUnique({
+                where: { chain_address: { chain, address: addr } },
+                select: { userId: true },
+            })
+            if (w) return w.userId
+        }
+        throw e
+    }
+}
+
+/** Attach another chain's wallet to an existing user, so both chains share one identity. */
+export const linkWallet = async (
+    prisma: PrismaClient,
+    userId: string,
+    chain: Chain,
+    address: string
+): Promise<void> => {
+    if (!isValidAddress(chain, address)) {
+        throw new Error(`not a valid ${chain} address: ${address}`)
+    }
+    const addr = normalizeAddress(chain, address)
+    await prisma.wallet.upsert({
+        where: { chain_address: { chain, address: addr } },
+        update: { userId },
+        create: { userId, chain, address: addr, isPrimary: false },
+    })
 }

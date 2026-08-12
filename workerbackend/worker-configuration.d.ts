@@ -13,6 +13,9 @@ declare namespace Cloudflare {
         DATABASE_URL: string;
         PUBLIC_URL?: string; // Public base URL for metadata/image URLs (e.g., https://your-worker.workers.dev or https://your-domain.com)
         COINBASE_WEBHOOK_SECRET: string;
+        BASE_SEPOLIA_RPC_URL?: string; // Base Sepolia RPC; defaults to publicnode (sepolia.base.org serves stale reads after writes)
+        EVM_NFT_ADDRESS?: string;      // KumuleNFT proxy on Base Sepolia
+        EVM_MARKET_ADDRESS?: string;   // KumuleMarket proxy on Base Sepolia
         PAYMENTS_DEMO_MODE?: string; // "true" opts into stub payments that auto-confirm; never set in production
 
         ADMIN_API_KEY: string; // Admin API key for /api/admin/*; admin routes 503 until it is set
