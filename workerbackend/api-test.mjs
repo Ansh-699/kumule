@@ -184,10 +184,19 @@ if (ADMIN_KEY) {
 }
 
 console.log('\nWebhooks (must not accept unsigned payments)')
+// 401 = signature rejected. 503 = COINBASE_WEBHOOK_SECRET is not configured, so the
+// handler refuses every webhook rather than trusting an unverifiable one. Both are
+// fail-closed and acceptable; a 2xx here would mean forged payments are accepted.
 await check('Webhooks', 'coinbase webhook rejects unsigned payload', '/api/webhooks/coinbase', {
   method: 'POST',
   body: { event: { type: 'charge:confirmed', data: { id: 'forged', metadata: { walletAddress: WALLET } } } },
-  expect: [400, 401, 403],
+  expect: [400, 401, 403, 503],
+})
+await check('Webhooks', 'coinbase webhook rejects a bogus signature', '/api/webhooks/coinbase', {
+  method: 'POST',
+  headers: { 'X-CC-Webhook-Signature': 'deadbeef' },
+  body: { event: { type: 'charge:confirmed', data: { id: 'forged', metadata: { walletAddress: WALLET } } } },
+  expect: [400, 401, 403, 503],
 })
 await check('Webhooks', 'unified webhook rejects unknown format', '/api/payments/webhook', {
   method: 'POST', body: { nonsense: true }, expect: [400],
