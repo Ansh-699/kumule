@@ -18,12 +18,13 @@
   // Local dev connection string comes from the environment, never this file - it is committed.
   // Set it in .dev.vars (git-ignored) or export:
   //   WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgresql://..."
-  "hyperdrive": [
-    {
-      "binding": "HYPERDRIVE",
-      "id": "51d6e914d1a24680a392ea585b7e8539"
-    }
-  ],
+  // Hyperdrive binding removed. It was configured against the v1 database, and
+  // getConnectionString() prefers Hyperdrive over DATABASE_URL - so leaving it bound would
+  // silently keep the worker on the old data no matter what DATABASE_URL is set to.
+  //
+  // Nothing is lost: the Neon connection string already targets the -pooler endpoint, so
+  // Neon pools the connections itself. Re-add this only with a config pointed at the
+  // current database.
   // "kv_namespaces": [
   //   {
   //     "binding": "MY_KV_NAMESPACE",
