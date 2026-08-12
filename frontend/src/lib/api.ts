@@ -255,6 +255,17 @@ export const api = {
             }
         >(`/api/nfts/${encodeURIComponent(assetId)}`),
 
+    toggleLike: (assetId: string, walletAddress: string) =>
+        request<{ success: boolean; liked: boolean; likeCount: number }>(
+            `/api/nfts/${encodeURIComponent(assetId)}/like`,
+            { method: 'POST', body: JSON.stringify({ walletAddress }) }
+        ),
+
+    likeState: (assetId: string, wallet: string) =>
+        request<{ liked: boolean }>(
+            `/api/nfts/${encodeURIComponent(assetId)}/liked?wallet=${encodeURIComponent(wallet)}`
+        ),
+
     listings: (p: { chain?: Chain; limit?: number; offset?: number } = {}) =>
         request<Paged<{
             listingId: string

@@ -10,6 +10,7 @@ import { ChainMark } from '@/components/ChainBadge'
 import { CATEGORIES } from '@/lib/chain-ui'
 import { NFT_ABI } from '@/lib/evm-abi'
 import { signAndSend, describeError } from '@/lib/solana-tx'
+import { ConnectForChain } from '@/components/ConnectForChain'
 
 /**
  * Minting, deliberately kept lean per the brief.
@@ -206,13 +207,19 @@ export const CreatePage = () => {
                     </div>
                 )}
 
-                <button
-                    onClick={mint}
-                    disabled={busy || !file || !name || !address}
-                    className="w-full rounded-xl bg-indigo-500 py-3 text-sm font-semibold text-white transition-colors hover:bg-indigo-400 disabled:bg-white/[0.05] disabled:text-white/40"
-                >
-                    {!address ? `Connect a ${ui.label} wallet` : busy ? 'Working…' : `Mint on ${ui.label}`}
-                </button>
+                {address ? (
+                    <button
+                        onClick={mint}
+                        disabled={busy || !file || !name}
+                        className="w-full rounded-xl bg-indigo-500 py-3 text-sm font-semibold text-white transition-colors hover:bg-indigo-400 disabled:bg-white/[0.05] disabled:text-white/40"
+                    >
+                        {busy ? 'Working…' : `Mint on ${ui.label}`}
+                    </button>
+                ) : (
+                    // A real connect control rather than a disabled button labelled "connect",
+                    // which left no way to actually do it from here.
+                    <ConnectForChain chain={chain} action={`mint on ${ui.label}`} />
+                )}
             </div>
         </div>
     )

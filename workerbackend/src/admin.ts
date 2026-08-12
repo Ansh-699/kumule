@@ -639,3 +639,53 @@ export const indexEvmListings = async (c: Context<{ Bindings: CloudflareBindings
         activeEthereumListings: activeRows,
     })
 }
+
+/**
+ * PUT /api/admin/r2/:folder/:filename — overwrite an object in place.
+ *
+ * Repair path for a bad asset. An NFT's metadata URI is recorded on chain, so the URL cannot
+ * change - but the bytes behind it can. Replacing the object fixes the image everywhere it is
+ * referenced without any on-chain write.
+ *
+ * Admin-only and folder-restricted on purpose: a public endpoint that accepts an arbitrary key
+ * would let anyone overwrite any asset's image.
+ */
+export const replaceR2Object = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    const folder = c.req.param('folder')
+    const filename = c.req.param('filename')
+
+    if (!['images', 'metadata', 'audio'].includes(folder)) {
+        return c.json({ error: 'folder must be images, metadata or audio' }, 400)
+    }
+    // No slashes or traversal: the key is built from exactly these two segments.
+    if (!/^[A-Za-z0-9._-]+$/.test(filename)) {
+        return c.json({ error: 'filename contains characters that are not allowed' }, 400)
+    }
+
+    const key = `${folder}/${filename}`
+    try {
+        const existing = await c.env.NFT_IMAGES.head(key)
+        if (!existing) return c.json({ error: `no existing object at ${key}` }, 404)
+
+        const body = await c.req.arrayBuffer()
+        if (body.byteLength === 0) return c.json({ error: 'empty body' }, 400)
+
+        const contentType =
+            c.req.header('content-type') || existing.httpMetadata?.contentType || 'application/octet-stream'
+
+        await c.env.NFT_IMAGES.put(key, body, {
+            httpMetadata: { contentType, cacheControl: 'public, max-age=31536000' },
+        })
+
+        return c.json({
+            success: true,
+            key,
+            previousBytes: existing.size,
+            bytes: body.byteLength,
+            contentType,
+        })
+    } catch (e: any) {
+        console.error('replaceR2Object failed:', e)
+        return c.json({ error: 'Failed to replace object', details: e?.message }, 500)
+    }
+}

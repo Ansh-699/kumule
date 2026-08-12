@@ -1,8 +1,9 @@
 import { Link } from 'react-router-dom'
-import { Heart, BadgeCheck, ImageOff } from 'lucide-react'
+import { BadgeCheck, ImageOff } from 'lucide-react'
+import { LikeButton } from './LikeButton'
 import { cn } from '@/lib/utils'
 import { ChainBadge } from './ChainBadge'
-import { CHAIN_UI, formatPrice, formatCount, shortAddress } from '@/lib/chain-ui'
+import { CHAIN_UI, formatPrice, shortAddress } from '@/lib/chain-ui'
 import type { Nft } from '@/lib/api'
 
 /**
@@ -40,13 +41,6 @@ const ImageArea = ({ nft, className }: { nft: Nft; className?: string }) => (
     </div>
 )
 
-const Likes = ({ count }: { count: number }) => (
-    <span className="inline-flex items-center gap-1.5 rounded-lg bg-black/50 px-2 py-1 text-xs text-white/80 backdrop-blur-md">
-        <Heart className="h-3.5 w-3.5" />
-        {formatCount(count)}
-    </span>
-)
-
 export const NftCard = ({ nft }: { nft: Nft }) => {
     const ui = CHAIN_UI[nft.chain]
     const price = nft.listing?.price
@@ -65,7 +59,7 @@ export const NftCard = ({ nft }: { nft: Nft }) => {
                 <ImageArea nft={nft} className="h-full w-full" />
                 <div className="absolute inset-x-3 top-3 flex items-start justify-between">
                     <ChainBadge chain={nft.chain} />
-                    <Likes count={nft.likeCount} />
+                    <LikeButton assetId={nft.assetId} likeCount={nft.likeCount} />
                 </div>
             </div>
 
@@ -130,9 +124,8 @@ export const NftRow = ({ nft }: { nft: Nft }) => {
                 <ChainBadge chain={nft.chain} variant="pill" />
             </div>
 
-            <div className="hidden shrink-0 items-center gap-1.5 text-xs text-white/50 md:flex">
-                <Heart className="h-3.5 w-3.5" />
-                {formatCount(nft.likeCount)}
+            <div className="hidden shrink-0 md:flex">
+                <LikeButton assetId={nft.assetId} likeCount={nft.likeCount} />
             </div>
 
             <div className="w-28 shrink-0 text-right">

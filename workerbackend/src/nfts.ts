@@ -6,7 +6,7 @@
 
 import { Context } from 'hono'
 import { Prisma } from '@prisma/client'
-import { withPrisma, getConnectionString } from './db'
+import { withPrisma, getConnectionString, ensureUser } from './db'
 import { Chain, parseChain, CHAIN_CONFIG, normalizeAddress, chainFromAddress } from './chains'
 
 const CATEGORIES = [
@@ -385,5 +385,99 @@ export const listCollections = async (c: Context<{ Bindings: CloudflareBindings 
     } catch (e: any) {
         console.error('listCollections failed:', e)
         return c.json({ error: 'Failed to list collections', details: e?.message }, 500)
+    }
+}
+
+/**
+ * POST /api/nfts/:assetId/like   { walletAddress }
+ *
+ * Toggle a like. The heart on every card was rendering likeCount with nothing able to change it.
+ *
+ * Identity is the wallet, keyed (chain, address) through ensureUser, so one person liking from
+ * their Solana and EVM wallets counts once. The unique index on (userId, nftId) is what actually
+ * enforces one like per person - a count column alone would drift under concurrent clicks.
+ */
+export const toggleLike = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    const connectionString = getConnectionString(c.env)
+    if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
+
+    const assetId = c.req.param('assetId')
+    let body: any
+    try {
+        body = await c.req.json()
+    } catch {
+        return c.json({ error: 'Invalid JSON body' }, 400)
+    }
+
+    const wallet = body?.walletAddress
+    if (!wallet || typeof wallet !== 'string') {
+        return c.json({ error: 'walletAddress is required' }, 400)
+    }
+    const walletChain = chainFromAddress(wallet)
+    if (!walletChain) return c.json({ error: 'walletAddress is not a recognised address' }, 400)
+
+    try {
+        const result = await withPrisma(connectionString, async (prisma) => {
+            const nft = await prisma.nft.findUnique({ where: { assetId }, select: { id: true } })
+            if (!nft) return { error: 'NFT not found' as const }
+
+            const userId = await ensureUser(prisma, walletChain, wallet)
+            const existing = await prisma.like.findUnique({
+                where: { userId_nftId: { userId, nftId: nft.id } },
+                select: { id: true },
+            })
+
+            // The count is derived from the rows rather than incremented blindly, so it cannot
+            // drift away from reality if a request is retried.
+            if (existing) {
+                await prisma.like.delete({ where: { id: existing.id } })
+            } else {
+                await prisma.like.create({ data: { userId, nftId: nft.id } })
+            }
+            const likeCount = await prisma.like.count({ where: { nftId: nft.id } })
+            await prisma.nft.update({ where: { id: nft.id }, data: { likeCount } })
+
+            return { liked: !existing, likeCount }
+        })
+
+        if ('error' in result) return c.json({ error: result.error }, 404)
+        return c.json({ success: true, ...result })
+    } catch (e: any) {
+        console.error('toggleLike failed:', e)
+        return c.json({ error: 'Failed to toggle like', details: e?.message }, 500)
+    }
+}
+
+/** GET /api/nfts/:assetId/liked?wallet= — whether this wallet already liked it. */
+export const getLikeState = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    const connectionString = getConnectionString(c.env)
+    if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
+
+    const assetId = c.req.param('assetId')
+    const wallet = c.req.query('wallet')?.trim()
+    if (!wallet) return c.json({ liked: false })
+
+    const walletChain = chainFromAddress(wallet)
+    if (!walletChain) return c.json({ liked: false })
+
+    try {
+        const liked = await withPrisma(connectionString, async (prisma) => {
+            const nft = await prisma.nft.findUnique({ where: { assetId }, select: { id: true } })
+            if (!nft) return false
+            const w = await prisma.wallet.findUnique({
+                where: { chain_address: { chain: walletChain, address: normalizeAddress(walletChain, wallet) } },
+                select: { userId: true },
+            })
+            if (!w) return false
+            const like = await prisma.like.findUnique({
+                where: { userId_nftId: { userId: w.userId, nftId: nft.id } },
+                select: { id: true },
+            })
+            return Boolean(like)
+        })
+        return c.json({ liked })
+    } catch (e: any) {
+        console.error('getLikeState failed:', e)
+        return c.json({ liked: false })
     }
 }

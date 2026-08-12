@@ -12,7 +12,7 @@ import { CHAINS, CHAIN_CONFIG, EVM_CHAIN_ID } from './chains'
 import { withPrisma, getConnectionString } from './db'
 
 // marketplace reads
-import { listNfts, getNft, listListings, getStats, listCollections } from './nfts'
+import { listNfts, getNft, listListings, getStats, listCollections, toggleLike, getLikeState } from './nfts'
 
 // solana marketplace (escrow program 3ozh4TQJ..., unchanged and still deployed)
 import { searchNftByAsset } from './searchnftbyasset'
@@ -48,7 +48,7 @@ import {
 import {
     adminAuth, getAdminOverview, listUsers, listAllListings as adminListings,
     listTransactions, setNftHidden, listBrokenNfts,
-    resolveNftMetadata, resolveMissingMetadata, indexEvmTokens, indexEvmListings,
+    resolveNftMetadata, resolveMissingMetadata, indexEvmTokens, indexEvmListings, replaceR2Object,
 } from './admin'
 import { verifyTransactionChecksum } from './audit'
 import { openAPISpec } from './openapi'
@@ -122,6 +122,8 @@ app.get('/openapi.json', (c) => c.json(openAPISpec))
 
 app.get('/api/nfts', listNfts)
 app.get('/api/nfts/:assetId', getNft)
+app.post('/api/nfts/:assetId/like', toggleLike)
+app.get('/api/nfts/:assetId/liked', getLikeState)
 app.get('/api/listings', listListings)
 app.get('/api/collections', listCollections)
 app.get('/api/stats', getStats)
@@ -227,6 +229,8 @@ app.post('/api/admin/nfts/:assetId/resolve', adminAuth, resolveNftMetadata)
 app.post('/api/admin/evm/index', adminAuth, indexEvmTokens)
 // Separate from the token pass: together they exceed the 50-subrequest budget per request.
 app.post('/api/admin/evm/index-listings', adminAuth, indexEvmListings)
+// Overwrite an asset's bytes in place. The on-chain URI cannot change, but what it serves can.
+app.put('/api/admin/r2/:folder/:filename', adminAuth, replaceR2Object)
 
 app.post('/api/admin/events', adminAuth, createEvent)
 app.delete('/api/admin/events/:id', adminAuth, deleteEvent)

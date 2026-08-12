@@ -5,7 +5,7 @@ import { useWallet } from '@solana/wallet-adapter-react'
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
 import { parseUnits } from 'viem'
 import {
-    ArrowLeft, ExternalLink, Heart, BadgeCheck, ImageOff, Loader2, CheckCircle2, AlertCircle, Tag,
+    ArrowLeft, ExternalLink, BadgeCheck, ImageOff, Loader2, CheckCircle2, AlertCircle, Tag,
     ShoppingCart, Flame,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -14,6 +14,8 @@ import { CHAIN_UI, formatPrice, shortAddress, relativeTime } from '@/lib/chain-u
 import { ChainBadge } from '@/components/ChainBadge'
 import { MARKET_ABI, NFT_ABI } from '@/lib/evm-abi'
 import { signAndSend, describeError } from '@/lib/solana-tx'
+import { ConnectForChain } from '@/components/ConnectForChain'
+import { LikeButton } from '@/components/LikeButton'
 
 type TxState =
     | { kind: 'idle' }
@@ -333,9 +335,7 @@ export const NftDetailPage = () => {
                         )}
                         <h1 className="mt-1 text-3xl font-bold text-white">{nft.name}</h1>
                         <div className="mt-2 flex flex-wrap items-center gap-4 text-sm text-white/45">
-                            <span className="inline-flex items-center gap-1.5">
-                                <Heart className="h-4 w-4" /> {nft.likeCount}
-                            </span>
+                            <LikeButton assetId={nft.assetId} likeCount={nft.likeCount} size="lg" className="-ml-1" />
                             <span>Owned by {isOwner ? 'you' : shortAddress(nft.ownerAddress, 6, 6)}</span>
                             <span>Minted {relativeTime(nft.mintedAt)}</span>
                         </div>
@@ -355,9 +355,9 @@ export const NftDetailPage = () => {
                                 </div>
 
                                 {!walletConnected ? (
-                                    <p className="mt-4 rounded-xl bg-white/[0.03] p-3 text-sm text-white/50">
-                                        Connect a {ui.label} wallet to buy this NFT.
-                                    </p>
+                                    <div className="mt-4">
+                                        <ConnectForChain chain={nft.chain} action="buy this NFT" />
+                                    </div>
                                 ) : isOwner ? (
                                     <p className="mt-4 rounded-xl bg-white/[0.03] p-3 text-sm text-white/50">
                                         This is your listing.

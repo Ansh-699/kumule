@@ -16,13 +16,14 @@
 
 import { Context } from 'hono'
 import { Prisma } from '@prisma/client'
-import { generateSigner, keypairIdentity, publicKey } from '@metaplex-foundation/umi'
+import { generateSigner, keypairIdentity, publicKey, type Transaction } from '@metaplex-foundation/umi'
 import { createV1, transferV1, fetchAssetV1 } from '@metaplex-foundation/mpl-core'
 import { base58 } from '@metaplex-foundation/umi/serializers'
 import { getUmi } from './umi'
 import { withPrisma, getConnectionString, ensureUser } from './db'
 import { solanaRpc, makeAssetId, isSolanaAddress } from './chains'
 import { logSecurityEvent } from './audit'
+import { verifySolanaTransaction } from './solana'
 
 const TIERS = ['GOLD', 'SILVER', 'BRONZE'] as const
 type Tier = (typeof TIERS)[number]
@@ -106,6 +107,33 @@ const vaultSigner = (env: CloudflareBindings) => {
         console.error('MEDAL_VAULT_PRIVATE_KEY is not a valid base58 secret key:', e)
         return null
     }
+}
+
+
+/**
+ * Send a built transaction and wait for confirmation within a Worker's budget.
+ *
+ * umi's sendAndConfirm blocks until its own strategy gives up, which took longer than the 30
+ * second ceiling Cloudflare allows a request - the medal mint returned an empty body and looked
+ * like it had done nothing. This sends once, then polls a bounded number of times.
+ *
+ * Returns the signature either way. `confirmed: false` means the transaction is in flight, not
+ * that it failed, so callers must not treat it as a failure and retry blindly.
+ */
+const sendWithBoundedConfirm = async (
+    env: CloudflareBindings,
+    umi: ReturnType<typeof getUmi>,
+    tx: Transaction
+): Promise<{ signature: string; confirmed: boolean }> => {
+    const raw = await umi.rpc.sendTransaction(tx)
+    const signature = base58.deserialize(raw)[0]
+
+    // Roughly 12 seconds of polling. Devnet MPL Core mints land in one to three.
+    for (let attempt = 0; attempt < 8; attempt++) {
+        await new Promise((r) => setTimeout(r, 1_500))
+        if (await verifySolanaTransaction(env, signature)) return { signature, confirmed: true }
+    }
+    return { signature, confirmed: false }
 }
 
 const serializeMedal = (m: any) => ({
@@ -451,10 +479,14 @@ export const grantPoints = async (c: Context<{ Bindings: CloudflareBindings }>) 
 // ---------------------------------------------------------------- medal minting (admin)
 
 /**
- * POST /api/admin/events/:id/medals/mint — mint any unminted medal into the vault.
+ * POST /api/admin/events/:id/medals/mint — mint one unminted medal into the vault.
  *
- * Minted up front, before anyone can claim, so a claim is a transfer of an asset that already
- * exists rather than a mint that might fail while a user waits.
+ * Minted up front, before anyone can claim, so a claim transfers an asset that already exists
+ * rather than a mint that might fail while a user waits.
+ *
+ * One medal per call, deliberately. Minting all three in a single request meant three sequential
+ * sendAndConfirm round trips, which exceeded the Worker's request budget and returned an empty
+ * body - the mint appeared to do nothing. Call until `remaining` reaches 0.
  */
 export const mintMedals = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     const connectionString = getConnectionString(c.env)
@@ -480,8 +512,12 @@ export const mintMedals = async (c: Context<{ Bindings: CloudflareBindings }>) =
             const medals = await prisma.eventMedal.findMany({
                 where: { eventId: event.id, nftId: null },
                 orderBy: { requiredPoints: 'desc' },
+                take: 1,
             })
-            return { event, medals }
+            const remaining = await prisma.eventMedal.count({
+                where: { eventId: event.id, nftId: null },
+            })
+            return { event, medals, remaining }
         })
 
         if (!pending) return c.json({ error: 'Event not found' }, 404)
@@ -501,14 +537,32 @@ export const mintMedals = async (c: Context<{ Bindings: CloudflareBindings }>) =
                     continue
                 }
 
-                const builder = createV1(vault.umi, {
+                // createV1 and setLatestBlockhash both return promises in this version, so each
+                // is awaited before the next step rather than chained.
+                const builder = await createV1(vault.umi, {
                     asset,
                     name: medal.name,
                     uri,
                     owner: vault.umi.identity.publicKey,
                 })
-                const result = await builder.sendAndConfirm(vault.umi)
-                const txHash = base58.deserialize(result.signature)[0]
+                const withBlockhash = await builder.setLatestBlockhash(vault.umi)
+                // buildAndSign, not build + identity.signTransaction: createV1 generates a new
+                // asset keypair that must also sign. Signing with the vault alone produced
+                // "Transaction did not pass signature verification".
+                const signed = await withBlockhash.buildAndSign(vault.umi)
+
+                const { signature: txHash, confirmed } = await sendWithBoundedConfirm(
+                    c.env, vault.umi, signed
+                )
+                if (!confirmed) {
+                    // Recorded as failed for this call rather than written to the database: the
+                    // transaction may still land, and re-running picks it up once it has.
+                    failed.push({
+                        tier: medal.tier,
+                        error: `sent but not confirmed within the request budget (${txHash}); re-run to pick it up`,
+                    })
+                    continue
+                }
                 const assetId = asset.publicKey.toString()
 
                 // The Nft row is written only after the mint confirms, so the database never
@@ -547,6 +601,8 @@ export const mintMedals = async (c: Context<{ Bindings: CloudflareBindings }>) =
             vault: vault.address,
             minted,
             failed,
+            // Nonzero means there is more to do: call this again.
+            remaining: Math.max(pending.remaining - minted.length, 0),
         }, failed.length > 0 && minted.length === 0 ? 502 : 200)
     } catch (e: any) {
         console.error('mintMedals failed:', e)

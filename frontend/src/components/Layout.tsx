@@ -8,6 +8,9 @@ const NAV = [
     { to: '/collections', label: 'Collections' },
     { to: '/events', label: 'Events' },
     { to: '/create', label: 'Create' },
+    // Was reachable only by typing the URL. It is key-gated on arrival, so linking it costs
+    // nothing and stops the dashboard being effectively invisible.
+    { to: '/admin', label: 'Admin' },
 ]
 
 export const Layout = () => (
