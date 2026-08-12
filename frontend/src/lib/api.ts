@@ -304,6 +304,18 @@ export const api = {
             body: JSON.stringify(body),
         }),
 
+    solanaBurn: (body: { assetId: string; owner: string }) =>
+        request<{ transaction: string; assetId: string; name: string; warning: string }>(
+            '/api/solana/burn',
+            { method: 'POST', body: JSON.stringify(body) }
+        ),
+
+    solanaBurnConfirm: (body: { assetId: string; signature: string }) =>
+        request<{ success: boolean; burned: string; name: string; txHash: string; explorerUrl: string }>(
+            '/api/solana/burn/confirm',
+            { method: 'POST', body: JSON.stringify(body) }
+        ),
+
     solanaVerify: (signature: string) =>
         request<{ verified: boolean }>(`/api/solana/verify/${signature}`),
 

@@ -2,6 +2,8 @@ import { Context } from 'hono'
 import { Prisma } from '@prisma/client'
 import { withPrisma, getConnectionString } from './db'
 import { Chain, CHAIN_CONFIG, parseChain } from './chains'
+import { resolveMetadata } from './metadata'
+import { evmContracts, totalMinted, readAsset, listAllListings as readEvmListings } from './evm'
 
 // Constant-time string compare so a wrong key leaks no timing signal.
 const timingSafeEqual = (a: string, b: string): boolean => {
@@ -348,4 +350,292 @@ export const listBrokenNfts = async (c: Context<{ Bindings: CloudflareBindings }
         console.error('listBrokenNfts failed:', e)
         return c.json({ error: 'Failed to list broken NFTs', details: e?.message }, 500)
     }
+}
+
+/**
+ * POST /api/admin/nfts/:assetId/resolve
+ *
+ * Re-read an asset's metadata JSON and refresh imageUrl, description, category and imageOk.
+ *
+ * This is the repair path for rows written before resolution existed, and for assets whose
+ * metadata host was down at mint time. Idempotent, so it is safe to re-run.
+ */
+export const resolveNftMetadata = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    const connectionString = getConnectionString(c.env)
+    if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
+
+    const assetId = c.req.param('assetId')
+    try {
+        const existing = await withPrisma(connectionString, (prisma) =>
+            prisma.nft.findUnique({ where: { assetId }, select: { metadataUri: true } })
+        )
+        if (!existing) return c.json({ error: 'NFT not found' }, 404)
+
+        const meta = await resolveMetadata(c.env, existing.metadataUri)
+
+        const updated = await withPrisma(connectionString, (prisma) =>
+            prisma.nft.update({
+                where: { assetId },
+                data: {
+                    imageUrl: meta.imageUrl,
+                    animationUrl: meta.animationUrl,
+                    description: meta.description,
+                    category: meta.category,
+                    attributes: meta.attributes ?? undefined,
+                    imageOk: meta.imageOk,
+                },
+            })
+        )
+
+        return c.json({
+            success: true,
+            assetId: updated.assetId,
+            imageUrl: updated.imageUrl,
+            category: updated.category,
+            imageOk: updated.imageOk,
+            reason: meta.reason,
+        })
+    } catch (e: any) {
+        console.error('resolveNftMetadata failed:', e)
+        return c.json({ error: 'Failed to resolve metadata', details: e?.message }, 500)
+    }
+}
+
+/**
+ * POST /api/admin/nfts/resolve-missing
+ *
+ * Re-resolve every asset whose image never came through. The backfill for the gap between
+ * minting and resolution existing.
+ *
+ * Capped per call so one request cannot run past the worker's CPU budget; re-run until
+ * `remaining` reaches zero.
+ */
+export const resolveMissingMetadata = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    const connectionString = getConnectionString(c.env)
+    if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
+
+    const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '10', 10) || 10, 1), 25)
+
+    try {
+        const pending = await withPrisma(connectionString, (prisma) =>
+            prisma.nft.findMany({
+                where: { imageOk: false },
+                select: { assetId: true, metadataUri: true },
+                orderBy: { mintedAt: 'desc' },
+                take: limit,
+            })
+        )
+
+        const fixed: string[] = []
+        const stillBroken: Array<{ assetId: string; reason: string | null }> = []
+
+        for (const row of pending) {
+            const meta = await resolveMetadata(c.env, row.metadataUri)
+            await withPrisma(connectionString, (prisma) =>
+                prisma.nft.update({
+                    where: { assetId: row.assetId },
+                    data: {
+                        imageUrl: meta.imageUrl,
+                        animationUrl: meta.animationUrl,
+                        description: meta.description,
+                        category: meta.category,
+                        attributes: meta.attributes ?? undefined,
+                        imageOk: meta.imageOk,
+                    },
+                })
+            )
+            if (meta.imageOk) fixed.push(row.assetId)
+            else stillBroken.push({ assetId: row.assetId, reason: meta.reason })
+        }
+
+        const remaining = await withPrisma(connectionString, (prisma) =>
+            prisma.nft.count({ where: { imageOk: false } })
+        )
+
+        return c.json({ success: true, processed: pending.length, fixed, stillBroken, remaining })
+    } catch (e: any) {
+        console.error('resolveMissingMetadata failed:', e)
+        return c.json({ error: 'Failed to backfill metadata', details: e?.message }, 500)
+    }
+}
+
+/**
+ * POST /api/admin/evm/index?from=1&to=50
+ *
+ * Index Base Sepolia tokens into the database.
+ *
+ * The worker never signs EVM transactions, so a mint that happens in a browser or from a script
+ * leaves no row behind. This reads each token straight from the contract, resolves its metadata,
+ * and upserts - which is also the repair path if the database is ever rebuilt from chain.
+ *
+ * Bounded per call so one request cannot exceed the worker's CPU budget.
+ */
+export const indexEvmTokens = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    const connectionString = getConnectionString(c.env)
+    if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
+
+    const contracts = evmContracts(c.env)
+    const supply = await totalMinted(c.env)
+    if (supply === 0n) return c.json({ success: true, indexed: [], skipped: [], supply: '0' })
+
+    const from = BigInt(Math.max(parseInt(c.req.query('from') || '1', 10) || 1, 1))
+    const requestedTo = c.req.query('to') ? BigInt(c.req.query('to')!) : supply
+    // Never walk past what exists, and cap the span so a big backfill is paged rather than
+    // timing out halfway through with no record of where it stopped.
+    const to = requestedTo > supply ? supply : requestedTo
+    const span = to - from + 1n
+    if (span <= 0n) return c.json({ error: 'from must be <= to' }, 400)
+    const capped = span > 25n ? from + 24n : to
+
+    const indexed: Array<{ tokenId: string; assetId: string; name: string; imageOk: boolean }> = []
+    const skipped: Array<{ tokenId: string; reason: string }> = []
+
+    for (let id = from; id <= capped; id++) {
+        const asset = await readAsset(c.env, contracts.nft, id)
+        if (!asset) {
+            skipped.push({ tokenId: id.toString(), reason: 'token does not exist on chain' })
+            continue
+        }
+
+        const meta = await resolveMetadata(c.env, asset.tokenUri)
+
+        try {
+            const row = await withPrisma(connectionString, (prisma) =>
+                prisma.nft.upsert({
+                    where: { assetId: asset.assetId },
+                    // Ownership and metadata are re-read from chain on every pass, so a transfer
+                    // or a fixed metadata host is picked up rather than frozen at first index.
+                    update: {
+                        ownerAddress: asset.ownerAddress,
+                        metadataUri: asset.tokenUri,
+                        ...(meta.name ? { name: meta.name } : {}),
+                        imageUrl: meta.imageUrl,
+                        animationUrl: meta.animationUrl,
+                        description: meta.description,
+                        category: meta.category,
+                        attributes: meta.attributes ?? undefined,
+                        imageOk: meta.imageOk,
+                    },
+                    create: {
+                        chain: 'ETHEREUM',
+                        chainId: asset.chainId,
+                        assetId: asset.assetId,
+                        contractAddress: asset.contractAddress,
+                        tokenId: asset.tokenId,
+                        // ERC-721 stores no per-token name, so it comes from the metadata.
+                        name: meta.name ?? `Token #${asset.tokenId}`,
+                        metadataUri: asset.tokenUri,
+                        imageUrl: meta.imageUrl,
+                        animationUrl: meta.animationUrl,
+                        description: meta.description,
+                        category: meta.category,
+                        attributes: meta.attributes ?? undefined,
+                        imageOk: meta.imageOk,
+                        ownerAddress: asset.ownerAddress,
+                        creatorAddress: asset.ownerAddress,
+                    },
+                })
+            )
+            indexed.push({
+                tokenId: asset.tokenId,
+                assetId: row.assetId,
+                name: row.name,
+                imageOk: row.imageOk,
+            })
+        } catch (e: any) {
+            console.error(`evm index failed for token ${id}:`, e)
+            skipped.push({ tokenId: id.toString(), reason: e?.message ?? 'upsert failed' })
+        }
+    }
+
+    return c.json({
+        success: true,
+        supply: supply.toString(),
+        range: { from: from.toString(), to: capped.toString() },
+        indexed,
+        skipped,
+        remaining: capped < to ? (to - capped).toString() : '0',
+        note: 'run POST /api/admin/evm/index-listings to mirror marketplace listings',
+    })
+}
+
+/**
+ * Mirror the marketplace contract's listings into the Listing table.
+ *
+ * The chain is the source of truth: an active on-chain listing becomes an ACTIVE row, and a row
+ * the chain no longer considers active is closed. That makes the sync idempotent and self-healing
+ * rather than accumulating stale listings nobody can buy.
+ */
+export const indexEvmListings = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    const connectionString = getConnectionString(c.env)
+    if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
+    const env = c.env
+
+    // Bounded because a Worker gets 50 subrequests per request and each listing costs several
+    // (one chain read, then database round trips). Sharing a request with the token indexer blew
+    // that budget and the sync silently died after one listing. Page with ?limit= until
+    // `remaining` is 0.
+    const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '6', 10) || 6, 1), 10)
+    const onChain = await readEvmListings(env, { limit, activeOnly: false })
+    let created = 0
+    let closed = 0
+    let skipped = 0
+
+    for (const l of onChain) {
+        const nft = await withPrisma(connectionString, (prisma) =>
+            prisma.nft.findUnique({ where: { assetId: l.assetId }, select: { id: true } })
+        )
+        // A listing for a token we have not indexed yet is skipped rather than guessed at.
+        if (!nft) { skipped++; continue }
+
+        const existing = await withPrisma(connectionString, (prisma) =>
+            prisma.listing.findFirst({
+                where: { nftId: nft.id, chain: 'ETHEREUM', sellerAddress: l.seller },
+                orderBy: { createdAt: 'desc' },
+            })
+        )
+
+        if (l.active) {
+            if (existing?.status === 'ACTIVE') {
+                if (existing.price.toString() !== l.price) {
+                    await withPrisma(connectionString, (prisma) =>
+                        prisma.listing.update({ where: { id: existing.id }, data: { price: l.price } })
+                    )
+                }
+                continue
+            }
+            await withPrisma(connectionString, (prisma) =>
+                prisma.listing.create({
+                    data: {
+                        nftId: nft.id,
+                        chain: 'ETHEREUM',
+                        sellerAddress: l.seller,
+                        // Decimal string from the chain's wei value, never a float.
+                        price: l.price,
+                        currency: 'ETH',
+                        status: 'ACTIVE',
+                    },
+                })
+            )
+            created++
+        } else if (existing?.status === 'ACTIVE') {
+            await withPrisma(connectionString, (prisma) =>
+                prisma.listing.update({ where: { id: existing.id }, data: { status: 'CANCELLED' } })
+            )
+            closed++
+        }
+    }
+
+    const activeRows = await withPrisma(connectionString, (prisma) =>
+        prisma.listing.count({ where: { chain: 'ETHEREUM', status: 'ACTIVE' } })
+    )
+
+    return c.json({
+        success: true,
+        scanned: onChain.length,
+        created,
+        closed,
+        skipped,
+        activeEthereumListings: activeRows,
+    })
 }

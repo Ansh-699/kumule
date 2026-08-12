@@ -5,7 +5,8 @@ import { useWallet } from '@solana/wallet-adapter-react'
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
 import { parseUnits } from 'viem'
 import {
-    ArrowLeft, ExternalLink, Heart, BadgeCheck, ImageOff, Loader2, CheckCircle2, AlertCircle, Tag, ShoppingCart,
+    ArrowLeft, ExternalLink, Heart, BadgeCheck, ImageOff, Loader2, CheckCircle2, AlertCircle, Tag,
+    ShoppingCart, Flame,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
@@ -75,6 +76,8 @@ export const NftDetailPage = () => {
     const queryClient = useQueryClient()
     const [tx, setTx] = useState<TxState>({ kind: 'idle' })
     const [listPrice, setListPrice] = useState('')
+    // Two-step so an irreversible action needs a second, deliberate click.
+    const [confirmBurn, setConfirmBurn] = useState(false)
 
     const solana = useWallet()
     const evm = useAccount()
@@ -246,6 +249,36 @@ export const NftDetailPage = () => {
         }
     }
 
+    // ---------------------------------------------------------------- burn
+
+    const burn = async () => {
+        if (!solana.publicKey || nft.chain !== 'SOLANA') return
+        try {
+            setTx({ kind: 'preparing', message: 'Building the burn transaction…' })
+            const { transaction } = await api.solanaBurn({
+                assetId: nft.assetId,
+                owner: solana.publicKey.toBase58(),
+            })
+
+            setTx({ kind: 'signing', message: 'Confirm the burn in your wallet. This cannot be undone.' })
+            const { signature } = await signAndSend(solana, transaction)
+
+            setTx({ kind: 'confirming', message: 'Verifying the burn on chain…' })
+            // The row is only removed after the backend re-checks the chain itself.
+            const result = await api.solanaBurnConfirm({ assetId: nft.assetId, signature })
+
+            setTx({
+                kind: 'success',
+                message: `${result.name} was burned. It no longer exists on chain.`,
+                explorerUrl: result.explorerUrl,
+            })
+            setConfirmBurn(false)
+        } catch (e: any) {
+            setTx({ kind: 'error', message: describeError(e) })
+            setConfirmBurn(false)
+        }
+    }
+
     // Once an EVM receipt lands, report from its actual status rather than assuming success.
     if (pendingHash && receipt.isSuccess && tx.kind === 'confirming') {
         setPendingHash(undefined)
@@ -396,6 +429,45 @@ export const NftDetailPage = () => {
                             }
                         />
                     </div>
+
+                    {isOwner && nft.chain === 'SOLANA' && !nft.listing && (
+                        <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.04] p-5">
+                            <h2 className="flex items-center gap-2 text-sm font-semibold text-white">
+                                <Flame className="h-4 w-4 text-red-400" />
+                                Burn this NFT
+                            </h2>
+                            <p className="mt-1.5 text-xs leading-relaxed text-white/50">
+                                Destroys the asset on chain permanently. The rent is returned to you. There
+                                is no undo, and no way to recover it afterwards.
+                            </p>
+
+                            {confirmBurn ? (
+                                <div className="mt-3 flex gap-2">
+                                    <button
+                                        onClick={burn}
+                                        disabled={busy}
+                                        className="flex-1 rounded-xl bg-red-500 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-red-400 disabled:opacity-60"
+                                    >
+                                        {busy ? 'Burning…' : `Yes, permanently burn ${nft.name}`}
+                                    </button>
+                                    <button
+                                        onClick={() => setConfirmBurn(false)}
+                                        className="rounded-xl border border-white/10 px-4 text-sm text-white/70 hover:bg-white/5"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            ) : (
+                                <button
+                                    onClick={() => setConfirmBurn(true)}
+                                    className="mt-3 inline-flex items-center gap-2 rounded-xl border border-red-500/30 px-4 py-2 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/10"
+                                >
+                                    <Flame className="h-4 w-4" />
+                                    Burn
+                                </button>
+                            )}
+                        </div>
+                    )}
 
                     {nft.music && (
                         <div className="rounded-2xl border border-white/[0.07] bg-[#0e1018] p-5">

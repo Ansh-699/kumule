@@ -101,7 +101,17 @@ export const listNfts = async (c: Context<{ Bindings: CloudflareBindings }>) => 
     const owner = c.req.query('owner')?.trim()
     const collection = c.req.query('collection')?.trim()
     const search = c.req.query('search')?.trim()
-    const listedOnly = c.req.query('listedOnly') === 'true'
+    // The marketplace shows what is for sale. An unlisted asset is the owner's own inventory as
+    // far as this grid is concerned, so listed-only is the default and a caller opts out
+    // explicitly.
+    //
+    // A product decision, not privacy: a minted token is public on chain forever and visible
+    // through any explorer. This only controls what the storefront puts on a shelf.
+    const listedParam = c.req.query('listedOnly')
+    const listedOnly = listedParam === undefined
+        // Browsing one wallet is a portfolio view, where unlisted items are the whole point.
+        ? !owner
+        : listedParam !== 'false'
     const includeHidden = c.req.query('includeHidden') === 'true'
     const sort = parseSort(c.req.query('sort'))
     const minPrice = c.req.query('minPrice')

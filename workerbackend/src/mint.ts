@@ -8,6 +8,7 @@ import { base58 } from '@metaplex-foundation/umi/serializers'
 import { verifySolPayment } from './solana'
 import { withPrisma, getConnectionString, ensureUser } from './db'
 import { makeAssetId, toBaseUnits, fromBaseUnits } from './chains'
+import { resolveMetadata } from './metadata'
 import { logBlockchainTransaction, logSecurityEvent, recordAuditedTransaction } from './audit'
 
 export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
@@ -208,6 +209,11 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         const dbConnectionString = getConnectionString(c.env)
         if (dbConnectionString) {
             try {
+                // Resolved before opening a connection: fetching a remote URI while holding a
+                // pooled Postgres connection is how a slow metadata host becomes a database
+                // problem. resolveMetadata never throws, so a failure here still records the mint.
+                const meta = await resolveMetadata(c.env, uri)
+
                 await withPrisma(dbConnectionString, async (prisma) => {
                     console.log('Mint DB: recording mint for', owner)
 
@@ -227,12 +233,22 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                             metadataUri: uri,
                             ownerAddress: owner,
                             creatorAddress: owner,
-                            // imageOk stays false until the indexer resolves the metadata and
-                            // confirms the image loads. v1 had no way to express "minted but
-                            // unrenderable", which is how 152 blank cards shipped.
-                            imageOk: false,
+                            // Resolved from the metadata JSON rather than taken on trust from the
+                            // caller: that URI is what the token actually points at. Without this
+                            // the row landed with imageUrl null and category OTHER while the
+                            // metadata sitting at the URI held both, so every mint rendered as
+                            // "No image available".
+                            imageUrl: meta.imageUrl,
+                            animationUrl: meta.animationUrl,
+                            description: meta.description,
+                            category: meta.category,
+                            attributes: meta.attributes ?? undefined,
+                            imageOk: meta.imageOk,
                         },
                     })
+                    if (!meta.imageOk) {
+                        console.warn(`[MINT] ${assetKey} image unresolved: ${meta.reason}`)
+                    }
                     console.log('Mint DB: nft row created', nft.assetId)
 
                     await prisma.transaction.create({

@@ -20,6 +20,7 @@ import { searchNftByOwner } from './searchnftbyowner'
 import { mintNft } from './mint'
 import { transferNft } from './transfer'
 import { listNft, buyNft, cancelListing, getListings, adminResolveEscrow } from './escrow'
+import { burnNft, confirmBurn } from './burn'
 
 // evm marketplace (read-only from the worker; writes are wallet-signed in the browser)
 import { evmContracts, totalMinted, readAsset, readListing, listAllListings as evmListings, verifyEvmTransaction } from './evm'
@@ -47,6 +48,7 @@ import {
 import {
     adminAuth, getAdminOverview, listUsers, listAllListings as adminListings,
     listTransactions, setNftHidden, listBrokenNfts,
+    resolveNftMetadata, resolveMissingMetadata, indexEvmTokens, indexEvmListings,
 } from './admin'
 import { verifyTransactionChecksum } from './audit'
 import { openAPISpec } from './openapi'
@@ -134,6 +136,10 @@ app.post('/api/solana/list', listNft)
 app.post('/api/solana/buy', buyNft)
 app.post('/api/solana/cancel', cancelListing)
 app.get('/api/solana/escrows', getListings)
+// Burning is two steps: build an unsigned transaction, then confirm it landed before the row
+// is removed. The worker holds no user key, so only the owner's wallet can authorise it.
+app.post('/api/solana/burn', burnNft)
+app.post('/api/solana/burn/confirm', confirmBurn)
 
 app.get('/api/solana/verify/:signature', async (c) => {
     const ok = await verifySolanaTransaction(c.env, c.req.param('signature'))
@@ -214,6 +220,13 @@ app.get('/api/admin/listings', adminAuth, adminListings)
 app.get('/api/admin/transactions', adminAuth, listTransactions)
 app.get('/api/admin/nfts/broken', adminAuth, listBrokenNfts)
 app.post('/api/admin/nfts/:assetId/hide', adminAuth, setNftHidden)
+// Repair paths for assets whose metadata was never resolved, or whose host was down at mint.
+app.post('/api/admin/nfts/resolve-missing', adminAuth, resolveMissingMetadata)
+app.post('/api/admin/nfts/:assetId/resolve', adminAuth, resolveNftMetadata)
+// The worker never signs EVM transactions, so a Base mint leaves no row until this runs.
+app.post('/api/admin/evm/index', adminAuth, indexEvmTokens)
+// Separate from the token pass: together they exceed the 50-subrequest budget per request.
+app.post('/api/admin/evm/index-listings', adminAuth, indexEvmListings)
 
 app.post('/api/admin/events', adminAuth, createEvent)
 app.delete('/api/admin/events/:id', adminAuth, deleteEvent)
