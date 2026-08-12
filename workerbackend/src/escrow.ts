@@ -582,7 +582,9 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                     await ensureUserExists(prisma, seller)
 
                     // Get escrow price for transaction record
-                    const connection = new Connection(c.env.SOLANA_RPC_URL)
+                    // Every other call site defaults to public devnet; this one threw on an
+                    // unset secret because new Connection(undefined) rejects the endpoint.
+                    const connection = new Connection(c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com')
                     const escrowAccountInfo = await connection.getAccountInfo(escrowPDA)
                     let priceInSol = 0
                     if (escrowAccountInfo) {

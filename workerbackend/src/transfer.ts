@@ -19,7 +19,7 @@ export const transferNft = async (c: Context<{ Bindings: CloudflareBindings }>) 
             return c.text('Invalid salePrice - must be a positive number', 400)
         }
 
-        const umi = getUmi(c.env.SOLANA_RPC_URL)
+        const umi = getUmi(c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com')
         const asset = publicKey(assetId)
         const newOwnerKey = publicKey(newOwner)
         const currentOwnerKey = publicKey(currentOwner)
