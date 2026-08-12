@@ -2,9 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href=".//nft.png" />
+    <!-- Absolute path, not ".//nft.png": the relative form resolved against the current route,
+         so the icon 404'd on any deep link like /nft/<assetId>. -->
+    <link rel="icon" type="image/png" href="/nft.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NFT Marketplace</title>
+    <meta name="color-scheme" content="dark" />
+    <title>Kumule — Multi-Chain NFT Marketplace</title>
+    <meta
+      name="description"
+      content="Discover, collect and sell NFTs across Solana and Ethereum. Every asset shows the chain it lives on."
+    />
+    <!-- Painted before React mounts so a deep link does not flash white on a dark app. -->
+    <style>
+      html, body { margin: 0; background: #07080d; }
+    </style>
   </head>
   <body>
     <div id="root"></div>
