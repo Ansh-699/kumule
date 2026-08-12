@@ -28,8 +28,12 @@ export const withPrisma = async <T>(
  * though this runtime adapter handles it. Strip that parameter for `prisma migrate` commands.
  */
 export const getConnectionString = (env: CloudflareBindings): string => {
-    if (env.HYPERDRIVE?.connectionString) return env.HYPERDRIVE.connectionString
+    // DATABASE_URL first, deliberately. Hyperdrive used to win here, which meant a stale
+    // Hyperdrive config silently overrode the secret and kept the worker reading an old
+    // database - with no error to explain why. An explicitly-set secret should always beat
+    // an inherited binding.
     if (env.DATABASE_URL) return env.DATABASE_URL
+    if (env.HYPERDRIVE?.connectionString) return env.HYPERDRIVE.connectionString
     console.error('DB: no connection string configured')
     return ''
 }
