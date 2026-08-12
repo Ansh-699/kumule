@@ -1,175 +1,161 @@
-import React, { useEffect, useState } from 'react';
-import {
-    Card,
-    CardContent,
-    CardDescription,
-    CardHeader,
-    CardTitle,
-} from '@/components/ui/card';
-import { Skeleton } from '@/components/ui/skeleton';
-import type { NftAsset, NftMetadata } from '@/services/api';
-import { ExternalLink, Music, Image, Ticket, FileVideo } from 'lucide-react';
+import { Link } from 'react-router-dom'
+import { Heart, BadgeCheck, ImageOff } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { ChainBadge } from './ChainBadge'
+import { CHAIN_UI, formatPrice, formatCount, shortAddress } from '@/lib/chain-ui'
+import type { Nft } from '@/lib/api'
 
-interface NftCardProps {
-    nft: NftAsset;
-    onList?: (nft: NftAsset) => void;
-}
+/**
+ * A marketplace card.
+ *
+ * Two things are always true regardless of variant: the chain is visible, and the price shows
+ * its own currency. A grid mixing 12.5 SOL and 1.25 ETH is unreadable if either is implied.
+ */
 
-// Determine NFT category based on metadata
-function getNftCategory(metadata: NftMetadata | null): { type: string; icon: React.ReactNode; color: string } {
-    if (!metadata) return { type: 'Unknown', icon: <Image className="w-3 h-3" />, color: 'bg-gray-500/20 text-gray-500' };
-    
-    const category = metadata.properties?.category?.toLowerCase();
-    const name = (metadata.name || '').toLowerCase();
-    
-    if (category === 'audio' || name.includes('track') || name.includes('album') || name.includes('music')) {
-        return { type: 'Music', icon: <Music className="w-3 h-3" />, color: 'bg-purple-500/20 text-purple-500' };
-    }
-    if (category === 'video' || metadata.animation_url?.includes('.mp4')) {
-        return { type: 'Video', icon: <FileVideo className="w-3 h-3" />, color: 'bg-blue-500/20 text-blue-500' };
-    }
-    if (name.includes('badge') || name.includes('ticket') || name.includes('event')) {
-        return { type: 'Event Badge', icon: <Ticket className="w-3 h-3" />, color: 'bg-amber-500/20 text-amber-500' };
-    }
-    
-    return { type: 'Artwork', icon: <Image className="w-3 h-3" />, color: 'bg-green-500/20 text-green-500' };
-}
+const ImageArea = ({ nft, className }: { nft: Nft; className?: string }) => (
+    <div className={cn('relative overflow-hidden bg-white/[0.03]', className)}>
+        {nft.imageUrl ? (
+            <img
+                src={nft.imageUrl}
+                alt={nft.name}
+                loading="lazy"
+                className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.04]"
+                onError={(e) => {
+                    // The backend flags unresolvable images, but a host can fail after indexing.
+                    // Swapping in the placeholder beats a browser's broken-image glyph.
+                    e.currentTarget.style.display = 'none'
+                    e.currentTarget.nextElementSibling?.classList.remove('hidden')
+                }}
+            />
+        ) : null}
+        <div
+            className={cn(
+                'absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/25',
+                nft.imageUrl && 'hidden'
+            )}
+        >
+            <ImageOff className="h-8 w-8" />
+            <span className="text-[11px] uppercase tracking-wider">No image</span>
+        </div>
+    </div>
+)
 
-// Generate Solana explorer URL
-function getExplorerUrl(publicKey: string): string {
-    return `https://explorer.solana.com/address/${publicKey}?cluster=devnet`;
-}
+const Likes = ({ count }: { count: number }) => (
+    <span className="inline-flex items-center gap-1.5 rounded-lg bg-black/50 px-2 py-1 text-xs text-white/80 backdrop-blur-md">
+        <Heart className="h-3.5 w-3.5" />
+        {formatCount(count)}
+    </span>
+)
 
-export const NftCard: React.FC<NftCardProps> = ({ nft, onList }) => {
-    const [metadata, setMetadata] = useState<NftMetadata | null>(null);
-    const [loading, setLoading] = useState<boolean>(true);
-
-    useEffect(() => {
-        const fetchMetadata = async () => {
-            if (!nft.uri) {
-                setLoading(false);
-                return;
-            }
-            try {
-                const response = await fetch(nft.uri);
-                const data = await response.json();
-                setMetadata(data);
-            } catch (error) {
-                console.error('Failed to fetch metadata:', error);
-            } finally {
-                setLoading(false);
-            }
-        };
-
-        fetchMetadata();
-    }, [nft.uri]);
+export const NftCard = ({ nft }: { nft: Nft }) => {
+    const ui = CHAIN_UI[nft.chain]
+    const price = nft.listing?.price
 
     return (
-        <Card className="w-full overflow-hidden hover:shadow-lg transition-shadow flex flex-col h-full">
-            <div className="h-48 w-full relative overflow-hidden bg-muted group">
-                {/* NFT Type Badge */}
-                {!loading && (
-                    <div className="absolute top-2 left-2 z-10">
-                        <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${getNftCategory(metadata).color}`}>
-                            {getNftCategory(metadata).icon}
-                            {getNftCategory(metadata).type}
-                        </span>
-                    </div>
-                )}
-                {/* Explorer Link */}
-                <a
-                    href={getExplorerUrl(nft.publicKey)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="absolute top-2 right-2 z-10 p-1.5 rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/70"
-                    title="View on Solana Explorer"
-                >
-                    <ExternalLink className="w-4 h-4" />
-                </a>
-                {loading ? (
-                    <Skeleton className="w-full h-full" />
-                ) : metadata?.animation_url ? (
-                    metadata.properties?.category === 'audio' ? (
-                        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-purple-500/10 to-pink-500/10 p-4">
-                            {metadata.image && (
-                                <img
-                                    src={metadata.image}
-                                    alt="Cover"
-                                    className="w-full h-32 object-cover rounded-lg mb-3 shadow-lg"
-                                />
-                            )}
-                            <audio controls src={metadata.animation_url} className="w-full" />
-                        </div>
-                    ) : (
-                        <video
-                            src={metadata.animation_url}
-                            autoPlay
-                            loop
-                            muted
-                            className="w-full h-full object-cover"
-                            poster={metadata.image}
-                        />
-                    )
-                ) : metadata?.image ? (
-                    <img
-                        src={metadata.image}
-                        alt={metadata.name || nft.name || 'NFT Image'}
-                        className="object-cover w-full h-full transition-transform hover:scale-105"
-                        loading="lazy"
-                        onError={(e) => {
-                            (e.target as HTMLImageElement).src = 'https://placehold.co/400x400?text=No+Image';
-                        }}
-                    />
-                ) : (
-                    <div className="w-full h-full flex items-center justify-center text-muted-foreground bg-secondary">
-                        No Image
-                    </div>
-                )}
-            </div>
-            <CardHeader className="p-3">
-                <CardTitle className="truncate text-base" title={metadata?.name || nft.name}>
-                    {metadata?.name || nft.name || 'Unnamed NFT'}
-                </CardTitle>
-                <CardDescription className="truncate text-xs font-mono flex items-center gap-1" title={nft.publicKey}>
-                    <span>{nft.publicKey.slice(0, 8)}...{nft.publicKey.slice(-8)}</span>
-                    <a
-                        href={getExplorerUrl(nft.publicKey)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-primary hover:text-primary/80"
-                        title="View on Solana Explorer"
-                    >
-                        <ExternalLink className="w-3 h-3" />
-                    </a>
-                </CardDescription>
-            </CardHeader>
-            <CardContent className="p-3 pt-0 flex-grow">
-                <div className="text-sm text-muted-foreground truncate mb-2" title={nft.owner}>
-                    <span className="font-semibold text-foreground">Owner:</span> {nft.owner.slice(0, 4)}...{nft.owner.slice(-4)}
+        <Link
+            to={`/nft/${encodeURIComponent(nft.assetId)}`}
+            className={cn(
+                'group relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.07]',
+                'bg-[#0e1018] transition-all duration-300',
+                'hover:-translate-y-1 hover:border-white/[0.14]',
+                `hover:${ui.glow}`
+            )}
+        >
+            <div className="relative aspect-square">
+                <ImageArea nft={nft} className="h-full w-full" />
+                <div className="absolute inset-x-3 top-3 flex items-start justify-between">
+                    <ChainBadge chain={nft.chain} />
+                    <Likes count={nft.likeCount} />
                 </div>
-                {metadata?.attributes && metadata.attributes.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-2">
-                        {metadata.attributes.slice(0, 3).map((attr, index) => (
-                            <span key={index} className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-primary/10 text-primary">
-                                {attr.value}
-                            </span>
-                        ))}
-                        {metadata.attributes.length > 3 && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-secondary text-secondary-foreground">
-                                +{metadata.attributes.length - 3}
-                            </span>
+            </div>
+
+            <div className="flex flex-1 flex-col gap-2.5 p-3.5">
+                <div className="min-w-0">
+                    <h3 className="truncate text-sm font-semibold text-white">{nft.name}</h3>
+                    <div className="mt-0.5 flex items-center gap-1 text-xs text-white/45">
+                        <span className="truncate">
+                            {nft.collection?.name ?? shortAddress(nft.creatorAddress ?? nft.ownerAddress)}
+                        </span>
+                        {nft.collection?.verified && (
+                            <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-sky-400" aria-label="Verified" />
                         )}
                     </div>
+                </div>
+
+                <div className="mt-auto border-t border-white/[0.06] pt-2.5">
+                    {price ? (
+                        <>
+                            <div className="text-[10px] uppercase tracking-wider text-white/35">Price</div>
+                            <div className="text-sm font-semibold text-white">
+                                {formatPrice(price)}{' '}
+                                <span className={ui.accent}>{nft.listing!.currency}</span>
+                            </div>
+                        </>
+                    ) : (
+                        <div className="text-xs text-white/35">Not listed</div>
+                    )}
+                </div>
+            </div>
+        </Link>
+    )
+}
+
+/** Row form for the list toggle. Same data, denser, with the owner exposed. */
+export const NftRow = ({ nft }: { nft: Nft }) => {
+    const ui = CHAIN_UI[nft.chain]
+    const price = nft.listing?.price
+
+    return (
+        <Link
+            to={`/nft/${encodeURIComponent(nft.assetId)}`}
+            className="group flex items-center gap-4 rounded-xl border border-white/[0.07] bg-[#0e1018] p-3 transition-colors hover:border-white/[0.14]"
+        >
+            <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-lg">
+                <ImageArea nft={nft} className="h-full w-full" />
+            </div>
+
+            <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                    <h3 className="truncate text-sm font-semibold text-white">{nft.name}</h3>
+                    {nft.collection?.verified && (
+                        <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-sky-400" aria-label="Verified" />
+                    )}
+                </div>
+                <div className="truncate text-xs text-white/45">
+                    {nft.collection?.name ?? shortAddress(nft.ownerAddress)}
+                </div>
+            </div>
+
+            <div className="hidden shrink-0 sm:block">
+                <ChainBadge chain={nft.chain} variant="pill" />
+            </div>
+
+            <div className="hidden shrink-0 items-center gap-1.5 text-xs text-white/50 md:flex">
+                <Heart className="h-3.5 w-3.5" />
+                {formatCount(nft.likeCount)}
+            </div>
+
+            <div className="w-28 shrink-0 text-right">
+                {price ? (
+                    <div className="text-sm font-semibold text-white">
+                        {formatPrice(price)} <span className={ui.accent}>{nft.listing!.currency}</span>
+                    </div>
+                ) : (
+                    <span className="text-xs text-white/35">Not listed</span>
                 )}
-                {onList && (
-                    <button
-                        onClick={() => onList(nft)}
-                        className="mt-4 w-full bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2 rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
-                    >
-                        Send to Marketplace
-                    </button>
-                )}
-            </CardContent>
-        </Card>
-    );
-};
+            </div>
+        </Link>
+    )
+}
+
+/** Matches the card's footprint so the grid does not reflow when results land. */
+export const NftCardSkeleton = () => (
+    <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0e1018]">
+        <div className="aspect-square animate-pulse bg-white/[0.04]" />
+        <div className="space-y-2 p-3.5">
+            <div className="h-4 w-2/3 animate-pulse rounded bg-white/[0.06]" />
+            <div className="h-3 w-1/2 animate-pulse rounded bg-white/[0.04]" />
+            <div className="h-4 w-1/3 animate-pulse rounded bg-white/[0.06]" />
+        </div>
+    </div>
+)

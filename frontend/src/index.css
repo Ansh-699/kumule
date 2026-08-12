@@ -1,1 +1,29 @@
 @import "tailwindcss";
+
+/* Dark-only surface, matching the marketplace design. Committing to one theme rather than
+   shipping a half-tuned light mode nobody asked for. */
+:root {
+  color-scheme: dark;
+  --surface: #07080d;
+  --card: #0e1018;
+}
+
+html, body, #root { min-height: 100%; }
+
+body {
+  background: var(--surface);
+  color: #fff;
+  -webkit-font-smoothing: antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* The wallet-adapter modal ships its own light styling; align it with the dark surface. */
+.wallet-adapter-modal-wrapper { background: var(--card) !important; }
+.wallet-adapter-modal-title { color: #fff !important; }
+.wallet-adapter-button { font-family: inherit !important; }
+
+/* Scrollbars in the sidebar and tables. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.18); }
