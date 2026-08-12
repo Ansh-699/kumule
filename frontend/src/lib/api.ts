@@ -28,13 +28,27 @@ export class ApiError extends Error {
 }
 
 const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
-    const res = await fetch(`${API_BASE}${path}`, {
-        ...init,
-        headers: {
-            ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-            ...init?.headers,
-        },
-    })
+    let res: Response
+    try {
+        res = await fetch(`${API_BASE}${path}`, {
+            ...init,
+            headers: {
+                ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+                ...init?.headers,
+            },
+        })
+    } catch (e) {
+        // fetch rejects with a bare TypeError for anything network-level, which renders as the
+        // useless "Failed to fetch". In this app the usual cause is a browser shield or content
+        // blocker refusing the call: the UI and API sit on different subdomains, and some
+        // blockers treat that as cross-site. Say so rather than leaving the user guessing.
+        throw new ApiError(
+            0,
+            'Could not reach the API. A browser shield, ad blocker or privacy extension is the ' +
+            'usual cause, since the app and the API are on different subdomains.',
+            `${API_BASE}${path}: ${(e as Error)?.message ?? String(e)}`
+        )
+    }
 
     const text = await res.text()
     let body: any = null

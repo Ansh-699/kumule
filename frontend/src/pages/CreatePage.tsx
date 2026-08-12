@@ -9,6 +9,7 @@ import { CHAIN_UI } from '@/lib/chain-ui'
 import { ChainMark } from '@/components/ChainBadge'
 import { CATEGORIES } from '@/lib/chain-ui'
 import { NFT_ABI } from '@/lib/evm-abi'
+import { signAndSend, describeError } from '@/lib/solana-tx'
 
 /**
  * Minting, deliberately kept lean per the brief.
@@ -85,25 +86,13 @@ export const CreatePage = () => {
             })
 
             setState({ kind: 'busy', step: 'Approve the mint in your wallet…' })
-            const { Transaction, Connection } = await import('@solana/web3.js')
-            const decoded = Transaction.from(Uint8Array.from(atob(transaction), (c) => c.charCodeAt(0)))
-            const signed = await solana.signTransaction!(decoded)
-
-            setState({ kind: 'busy', step: 'Sending to Solana devnet…' })
-            const connection = new Connection(
-                (import.meta.env.VITE_SOLANA_RPC as string) || 'https://api.devnet.solana.com',
-                'confirmed'
-            )
-            const signature = await connection.sendRawTransaction(signed.serialize())
-            await connection.confirmTransaction(signature, 'confirmed')
+            // signAndSend handles the versioned wire format umi emits, and throws if the
+            // transaction lands but errors on chain rather than reporting a false success.
+            const { signature } = await signAndSend(solana, transaction)
 
             setState({ kind: 'done', assetId: mintAddress, explorerUrl: ui.explorerTx(signature) })
         } catch (e: any) {
-            const rejected = /rejected|denied|User rejected/i.test(e?.message ?? '')
-            setState({
-                kind: 'error',
-                message: rejected ? 'You cancelled the transaction' : e?.shortMessage || e?.message || 'Mint failed',
-            })
+            setState({ kind: 'error', message: describeError(e) })
         }
     }
 

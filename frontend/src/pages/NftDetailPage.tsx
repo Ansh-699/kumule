@@ -12,6 +12,7 @@ import { api } from '@/lib/api'
 import { CHAIN_UI, formatPrice, shortAddress, relativeTime } from '@/lib/chain-ui'
 import { ChainBadge } from '@/components/ChainBadge'
 import { MARKET_ABI, NFT_ABI } from '@/lib/evm-abi'
+import { signAndSend, describeError } from '@/lib/solana-tx'
 
 type TxState =
     | { kind: 'idle' }
@@ -156,13 +157,9 @@ export const NftDetailPage = () => {
             setPendingHash(hash)
             setTx({ kind: 'confirming', message: 'Waiting for confirmation…', hash })
         } catch (e: any) {
-            // Surfaced, never swallowed. A user rejecting in their wallet is a normal outcome
-            // and should read as such rather than as a failure.
-            const rejected = /rejected|denied|User rejected/i.test(e?.message ?? '')
-            setTx({
-                kind: 'error',
-                message: rejected ? 'You cancelled the transaction' : e?.shortMessage || e?.message || 'Purchase failed',
-            })
+            // Surfaced, never swallowed. A wallet rejection is a normal outcome and reads as
+            // such; a blocked network call explains itself instead of saying "Failed to fetch".
+            setTx({ kind: 'error', message: describeError(e) })
         }
     }
 
@@ -177,19 +174,12 @@ export const NftDetailPage = () => {
             })
 
             setTx({ kind: 'signing', message: 'Approve the purchase in your wallet…' })
-            const { Transaction, Connection } = await import('@solana/web3.js')
-            const decoded = Transaction.from(Uint8Array.from(atob(transaction), (c) => c.charCodeAt(0)))
-            const signed = await solana.signTransaction(decoded)
+            // signAndSend decodes the versioned format umi emits and throws if the transaction
+            // lands but errors on chain, rather than reporting a success that did not happen.
+            const { signature } = await signAndSend(solana, transaction)
 
-            setTx({ kind: 'confirming', message: 'Sending to Solana devnet…' })
-            const connection = new Connection(
-                (import.meta.env.VITE_SOLANA_RPC as string) || 'https://api.devnet.solana.com',
-                'confirmed'
-            )
-            const signature = await connection.sendRawTransaction(signed.serialize())
-            await connection.confirmTransaction(signature, 'confirmed')
-
-            // Confirmed against the chain, not assumed from a successful send.
+            setTx({ kind: 'confirming', message: 'Verifying against the chain…' })
+            // Re-checked server-side: a resolved send only means the node accepted it.
             const verified = await api.solanaVerify(signature).catch(() => ({ verified: false }))
             if (!verified.verified) throw new Error('Transaction did not confirm successfully')
 
@@ -200,11 +190,7 @@ export const NftDetailPage = () => {
             })
             refresh()
         } catch (e: any) {
-            const rejected = /rejected|denied|User rejected/i.test(e?.message ?? '')
-            setTx({
-                kind: 'error',
-                message: rejected ? 'You cancelled the transaction' : e?.message || 'Purchase failed',
-            })
+            setTx({ kind: 'error', message: describeError(e) })
         }
     }
 
@@ -235,11 +221,7 @@ export const NftDetailPage = () => {
             setPendingHash(hash)
             setTx({ kind: 'confirming', message: 'Waiting for confirmation…', hash })
         } catch (e: any) {
-            const rejected = /rejected|denied|User rejected/i.test(e?.message ?? '')
-            setTx({
-                kind: 'error',
-                message: rejected ? 'You cancelled the transaction' : e?.shortMessage || e?.message || 'Listing failed',
-            })
+            setTx({ kind: 'error', message: describeError(e) })
         }
     }
 
@@ -255,26 +237,12 @@ export const NftDetailPage = () => {
             })
 
             setTx({ kind: 'signing', message: 'Approve the listing in your wallet…' })
-            const { Transaction, Connection } = await import('@solana/web3.js')
-            const decoded = Transaction.from(Uint8Array.from(atob(transaction), (c) => c.charCodeAt(0)))
-            const signed = await solana.signTransaction(decoded)
-
-            setTx({ kind: 'confirming', message: 'Sending to Solana devnet…' })
-            const connection = new Connection(
-                (import.meta.env.VITE_SOLANA_RPC as string) || 'https://api.devnet.solana.com',
-                'confirmed'
-            )
-            const signature = await connection.sendRawTransaction(signed.serialize())
-            await connection.confirmTransaction(signature, 'confirmed')
+            const { signature } = await signAndSend(solana, transaction)
 
             setTx({ kind: 'success', message: 'Listed for sale.', explorerUrl: ui.explorerTx(signature) })
             refresh()
         } catch (e: any) {
-            const rejected = /rejected|denied|User rejected/i.test(e?.message ?? '')
-            setTx({
-                kind: 'error',
-                message: rejected ? 'You cancelled the transaction' : e?.message || 'Listing failed',
-            })
+            setTx({ kind: 'error', message: describeError(e) })
         }
     }
 
