@@ -1,11 +1,28 @@
 import { Context } from 'hono'
-import { withPrisma, getConnectionString, ensureUserExists } from './db'
+import { withPrisma, getConnectionString, ensureUser } from './db'
+import { parseChain, isValidAddress, normalizeAddress, CHAIN_CONFIG } from './chains'
+
+/**
+ * URL-safe slug from an artist and album name, with a short suffix so two albums of the same
+ * name by the same artist do not collide on the unique index.
+ */
+const albumSlug = (artist: string, name: string): string => {
+    const base = `${artist}-${name}`
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 60)
+    return `${base || 'album'}-${Math.random().toString(36).slice(2, 8)}`
+}
 
 // Create a new album
 export const createAlbum = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     try {
         const body = await c.req.json()
         const { name, artist, description, coverUrl, releaseDate, genre, price, creatorWallet } = body
+        // Albums exist on a chain now, because a music NFT is minted on one. Solana by default,
+        // matching where the existing music flow already lives.
+        const chain = parseChain(body.chain) ?? 'SOLANA'
 
         if (!name || !artist || !coverUrl || !creatorWallet) {
             return c.json({ error: 'Missing required fields: name, artist, coverUrl, creatorWallet' }, 400)
@@ -17,21 +34,26 @@ export const createAlbum = async (c: Context<{ Bindings: CloudflareBindings }>) 
         }
 
         const album = await withPrisma(connectionString, async (prisma) => {
-            // Ensure user exists
-            await ensureUserExists(prisma, creatorWallet)
+            // Keyed on (chain, address) so a creator holding both a Solana and an EVM
+            // wallet stays one user rather than two.
+            await ensureUser(prisma, chain, creatorWallet)
             
             return await prisma.album.create({
                 data: {
+                    chain,
+                    slug: albumSlug(artist, name),
                     name,
                     artist,
                     description: description || null,
                     coverUrl,
                     releaseDate: releaseDate ? new Date(releaseDate) : null,
                     genre: genre || null,
-                    price: price || null,
-                    creatorWallet,
+                    // String, not a number: the Decimal column should be built from exact digits.
+                    price: price === undefined || price === null ? null : String(price),
+                    currency: CHAIN_CONFIG[chain].currency,
+                    creatorAddress: normalizeAddress(chain, creatorWallet),
                     isPublished: false,
-                    totalTracks: 0
+                    trackCount: 0
                 }
             })
         })
@@ -52,13 +74,17 @@ export const listAlbums = async (c: Context<{ Bindings: CloudflareBindings }>) =
         }
 
         const publishedOnly = c.req.query('published') !== 'false'
-        const creatorWallet = c.req.query('creator')
+        const creatorQuery = c.req.query('creator')
+        const chainQuery = parseChain(c.req.query('chain'))
 
         const albums = await withPrisma(connectionString, async (prisma) => {
             return await prisma.album.findMany({
                 where: {
                     ...(publishedOnly && { isPublished: true }),
-                    ...(creatorWallet && { creatorWallet })
+                    ...(chainQuery && { chain: chainQuery }),
+                    ...(creatorQuery && {
+                        creatorAddress: normalizeAddress(chainQuery ?? 'SOLANA', creatorQuery),
+                    })
                 },
                 include: {
                     tracks: {
@@ -117,7 +143,9 @@ export const updateAlbum = async (c: Context<{ Bindings: CloudflareBindings }>) 
     try {
         const albumId = c.req.param('id')
         const body = await c.req.json()
-        const { name, artist, description, coverUrl, releaseDate, genre, price, isPublished, metadataUri, nftAsset } = body
+        // nftAsset is gone: a minted album points at an Nft row via nftId, so on-chain
+        // identity has exactly one home. Link it through the mint flow, not here.
+        const { name, artist, description, coverUrl, releaseDate, genre, price, isPublished, metadataUri } = body
 
         if (!albumId) {
             return c.json({ error: 'Album ID required' }, 400)
@@ -138,10 +166,9 @@ export const updateAlbum = async (c: Context<{ Bindings: CloudflareBindings }>) 
                     ...(coverUrl && { coverUrl }),
                     ...(releaseDate && { releaseDate: new Date(releaseDate) }),
                     ...(genre !== undefined && { genre }),
-                    ...(price !== undefined && { price }),
+                    ...(price !== undefined && { price: price === null ? null : String(price) }),
                     ...(isPublished !== undefined && { isPublished }),
-                    ...(metadataUri && { metadataUri }),
-                    ...(nftAsset && { nftAsset })
+                    ...(metadataUri && { metadataUri })
                 },
                 include: {
                     tracks: {
@@ -223,19 +250,19 @@ export const addTrack = async (c: Context<{ Bindings: CloudflareBindings }>) => 
                     description: description || null,
                     audioUrl,
                     artworkUrl: artworkUrl || null,
-                    duration: duration || null,
+                    durationSec: duration || null,
                     trackNumber: nextTrackNumber,
-                    price: price || null,
+                    price: price === undefined || price === null ? null : String(price),
                     integrityHash: integrityHash || null,
                     isPreviewable: isPreviewable !== false,
-                    previewDuration: previewDuration || 30
+                    previewSeconds: previewDuration || 30
                 }
             })
 
             // Update album total tracks
             await prisma.album.update({
                 where: { id: albumId },
-                data: { totalTracks: album.tracks.length + 1 }
+                data: { trackCount: album.tracks.length + 1 }
             })
 
             return track
@@ -327,7 +354,7 @@ export const deleteTrack = async (c: Context<{ Bindings: CloudflareBindings }>) 
 
             await prisma.album.update({
                 where: { id: track.albumId },
-                data: { totalTracks: remainingTracks }
+                data: { trackCount: remainingTracks }
             })
         })
 
@@ -376,7 +403,7 @@ export const generateTrackMetadata = async (c: Context<{ Bindings: CloudflareBin
                     { trait_type: 'Track Number', value: track.trackNumber.toString() },
                     { trait_type: 'Category', value: 'Music' },
                     ...(track.album.genre ? [{ trait_type: 'Genre', value: track.album.genre }] : []),
-                    ...(track.duration ? [{ trait_type: 'Duration', value: `${Math.floor(track.duration / 60)}:${(track.duration % 60).toString().padStart(2, '0')}` }] : [])
+                    ...(track.durationSec ? [{ trait_type: 'Duration', value: `${Math.floor(track.durationSec / 60)}:${(track.durationSec % 60).toString().padStart(2, '0')}` }] : [])
                 ],
                 properties: {
                     category: 'audio',

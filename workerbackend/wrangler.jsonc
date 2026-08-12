@@ -10,9 +10,11 @@
   // - .dev.vars file for local development (git-ignored)
   // - Cloudflare dashboard secrets for production
   // No vars defined here to avoid committing secrets
-  "vars": {
-    "COINBASE_API_KEY_NAME": "29b6eb08-e2e9-4276-9a64-603cab86ab69"
-  },
+  // No vars here: every secret comes from .dev.vars locally and Cloudflare secrets in
+  // production. This file is committed, so nothing sensitive may live in it.
+  //
+  // Optional: BASE_SEPOLIA_RPC_URL, EVM_NFT_ADDRESS, EVM_MARKET_ADDRESS,
+  // MINT_FEE_LAMPORTS, MINT_FEE_TREASURY, MEDAL_VAULT_PRIVATE_KEY, ADMIN_API_KEY.
   // Local dev connection string comes from the environment, never this file - it is committed.
   // Set it in .dev.vars (git-ignored) or export:
   //   WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgresql://..."

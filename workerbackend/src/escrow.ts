@@ -4,7 +4,8 @@ import { BN, Program, AnchorProvider } from '@coral-xyz/anchor'
 import { createNoopSigner, publicKey as umiPublicKey, signerIdentity } from '@metaplex-foundation/umi'
 import { getUmi } from './umi'
 import { fetchAssetV1, getAssetV1GpaBuilder } from '@metaplex-foundation/mpl-core'
-import { withPrisma, getConnectionString, ensureUserExists } from './db'
+import { withPrisma, getConnectionString, ensureUser } from './db'
+import { fromBaseUnits, toBaseUnits } from './chains'
 import { logBlockchainTransaction, logAudit } from './audit'
 
 // Lazy initialization to avoid module-level PublicKey creation issues
@@ -214,7 +215,10 @@ export const getListings = async (c: Context<{ Bindings: CloudflareBindings }>) 
                     escrow: pubkey.toBase58(),
                     asset: escrowData.asset.toBase58(),
                     seller: escrowData.seller.toBase58(),
-                    price: Number(escrowData.price) / 1e9,
+                    // fromBaseUnits, not Number(price)/1e9: the on-chain price is a u64 and
+                    // dividing it through a float is how a listing shows a price nobody set.
+                    price: fromBaseUnits(escrowData.price, 'SOLANA'),
+                    priceLamports: escrowData.price.toString(),
                     name: asset.name,
                     uri: asset.uri,
                 })
@@ -244,10 +248,16 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
 
         const assetPubkey = new PublicKey(assetId)
         const sellerPubkey = new PublicKey(seller)
-        const priceNum = Number(price)
-
-        if (isNaN(priceNum) || priceNum <= 0) {
-            return c.text('Invalid price', 400)
+        // Parsed straight to lamports as a bigint. toBaseUnits rejects a non-numeric price
+        // and anything finer than 9 decimals rather than silently rounding it.
+        let priceLamports: bigint
+        try {
+            priceLamports = toBaseUnits(String(price), 'SOLANA')
+        } catch (e: any) {
+            return c.text(`Invalid price: ${e?.message ?? 'not a decimal amount'}`, 400)
+        }
+        if (priceLamports <= 0n) {
+            return c.text('Invalid price: must be greater than zero', 400)
         }
 
         const [escrowPDA] = getEscrowPDA(assetPubkey, sellerPubkey)
@@ -325,7 +335,10 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             ],
             data: Buffer.from([
                 ...getIDL().instructions[0].discriminator,
-                ...new BN(priceNum * 1e9).toArray('le', 8),
+                // BN from a decimal string, never priceNum * 1e9. That multiplication is a
+                // float: 1.1 * 1e9 is 1100000000.0000002, so the price written on-chain would
+                // not be the price the seller typed.
+                ...new BN(priceLamports.toString()).toArray('le', 8),
                 0,
             ]),
         })
@@ -417,44 +430,40 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         if (connectionString) {
             try {
                 await withPrisma(connectionString, async (prisma) => {
-                    const sellerUserId = await ensureUserExists(prisma, seller)
-                    console.log('List DB: Seller tracked', seller)
-                    
-                    // Find NFT in database
-                    const nft = await prisma.nft.findUnique({
-                        where: { nftId: assetId }
-                    })
-                    
+                    await ensureUser(prisma, 'SOLANA', seller)
+                    console.log('List DB: seller tracked', seller)
+
+                    const nft = await prisma.nft.findUnique({ where: { assetId } })
+
                     if (nft) {
-                        // Check if escrow already exists for this NFT
-                        const existingEscrow = await prisma.escrow.findFirst({
-                            where: {
-                                nftId: nft.id,
-                                userId: sellerUserId
-                            }
+                        // A Listing IS the escrow record now - the v1 Escrow table folded into
+                        // it, so there is one row describing "this asset is for sale at this
+                        // price" rather than two that could disagree.
+                        const existing = await prisma.listing.findFirst({
+                            where: { nftId: nft.id, sellerAddress: seller, status: 'ACTIVE' },
                         })
-                        
-                        if (existingEscrow) {
-                            // Update existing escrow
-                            await prisma.escrow.update({
-                                where: { id: existingEscrow.id },
-                                data: {
-                                    status: 'DEPOSITED',
-                                    amount: priceNum
-                                }
+
+                        if (existing) {
+                            await prisma.listing.update({
+                                where: { id: existing.id },
+                                // String, not priceNum: the Decimal column is built from exact
+                                // digits so a price never round-trips through a float.
+                                data: { price: String(price), escrowPda: escrowPDA.toBase58() },
                             })
-                            console.log('List DB: Escrow record updated')
+                            console.log('List DB: listing updated')
                         } else {
-                            // Create new escrow
-                            await prisma.escrow.create({
+                            await prisma.listing.create({
                                 data: {
-                                    userId: sellerUserId,
                                     nftId: nft.id,
-                                    amount: priceNum,
-                                    status: 'DEPOSITED'
-                                }
+                                    chain: 'SOLANA',
+                                    sellerAddress: seller,
+                                    price: String(price),
+                                    currency: 'SOL',
+                                    status: 'ACTIVE',
+                                    escrowPda: escrowPDA.toBase58(),
+                                },
                             })
-                            console.log('List DB: Escrow record created')
+                            console.log('List DB: listing created')
                         }
                     }
                 })
@@ -574,51 +583,47 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         if (connectionString) {
             try {
                 await withPrisma(connectionString, async (prisma) => {
-                    // Ensure buyer exists
-                    const buyerUserId = await ensureUserExists(prisma, buyer)
-                    console.log('Buy DB: Buyer tracked', buyer)
+                    const buyerUserId = await ensureUser(prisma, 'SOLANA', buyer)
+                    console.log('Buy DB: buyer tracked', buyer)
+                    await ensureUser(prisma, 'SOLANA', seller)
 
-                    // Also ensure seller exists
-                    await ensureUserExists(prisma, seller)
-
-                    // Get escrow price for transaction record
                     // Every other call site defaults to public devnet; this one threw on an
                     // unset secret because new Connection(undefined) rejects the endpoint.
                     const connection = new Connection(c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com')
                     const escrowAccountInfo = await connection.getAccountInfo(escrowPDA)
-                    let priceInSol = 0
+                    // Decimal string throughout. The escrow price is a u64 of lamports, so it
+                    // converts exactly rather than via Number()/1e9.
+                    let priceSol = '0'
                     if (escrowAccountInfo) {
                         const escrowData = parseEscrowAccount(escrowAccountInfo.data)
-                        priceInSol = Number(escrowData.price) / 1e9
+                        priceSol = fromBaseUnits(escrowData.price, 'SOLANA')
                     }
 
-                    // Find NFT in database by on-chain ID
-                    const nft = await prisma.nft.findUnique({
-                        where: { nftId: assetId }
-                    })
+                    const nft = await prisma.nft.findUnique({ where: { assetId } })
 
-                    // Record the purchase transaction
-                            await prisma.transaction.create({
-                                data: {
-                                    transactionId: `buy_${assetId}_${Date.now()}`,
-                                    userId: buyerUserId,
-                                    amount: priceInSol,
-                                    nftId: nft?.id || null,
-                                    transactionType: 'PURCHASE',
-                                    status: 'PENDING', // Will be COMPLETED after on-chain confirmation
-                                    walletAddress: buyer,
-                                    txHash: null,
-                                    currency: 'SOL',
-                                    network: 'solana',
-                                    metadata: JSON.stringify({
-                                        source: 'escrow_purchase',
-                                        assetId: assetId,
-                                        seller: seller,
-                                        price: priceInSol
-                                    })
-                                } as any
-                            })
-                    console.log('Buy DB: Transaction recorded')
+                    // PENDING until the signed transaction actually lands. The buy instruction
+                    // is returned unsigned, so nothing here proves settlement yet - the
+                    // indexer flips this to CONFIRMED and writes the Sale row.
+                    await prisma.transaction.create({
+                        data: {
+                            chain: 'SOLANA',
+                            kind: 'PURCHASE',
+                            status: 'PENDING',
+                            userId: buyerUserId,
+                            walletAddress: buyer,
+                            amount: priceSol,
+                            currency: 'SOL',
+                            metadata: {
+                                source: 'escrow_purchase',
+                                assetId,
+                                nftRowId: nft?.id ?? null,
+                                seller,
+                                price: priceSol,
+                                escrowPda: escrowPDA.toBase58(),
+                            },
+                        },
+                    })
+                    console.log('Buy DB: transaction recorded (PENDING)')
                 })
             } catch (e) {
                 console.error('Failed to track buyer in DB:', e)
@@ -733,26 +738,20 @@ export const cancelListing = async (c: Context<{ Bindings: CloudflareBindings }>
         if (connectionString) {
             try {
                 await withPrisma(connectionString, async (prisma) => {
-                    // Find escrow by NFT and seller
-                    const nft = await prisma.nft.findUnique({
-                        where: { nftId: assetId }
-                    })
-                    
+                    const nft = await prisma.nft.findUnique({ where: { assetId } })
+
                     if (nft) {
-                        const sellerUserId = await ensureUserExists(prisma, seller)
-                        const escrow = await prisma.escrow.findFirst({
-                            where: {
-                                nftId: nft.id,
-                                userId: sellerUserId
-                            }
+                        await ensureUser(prisma, 'SOLANA', seller)
+                        const listing = await prisma.listing.findFirst({
+                            where: { nftId: nft.id, sellerAddress: seller, status: 'ACTIVE' },
                         })
-                        
-                        if (escrow) {
-                            await prisma.escrow.update({
-                                where: { id: escrow.id },
-                                data: { status: 'CANCELLED' }
+
+                        if (listing) {
+                            await prisma.listing.update({
+                                where: { id: listing.id },
+                                data: { status: 'CANCELLED' },
                             })
-                            console.log('Cancel DB: Escrow status updated to CANCELLED')
+                            console.log('Cancel DB: listing CANCELLED')
                         }
                     }
                 })

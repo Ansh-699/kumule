@@ -2,7 +2,7 @@ import { Context } from 'hono'
 import { getUmi } from './umi'
 import { createNoopSigner, publicKey, signerIdentity } from '@metaplex-foundation/umi'
 import { transferV1 } from '@metaplex-foundation/mpl-core'
-import { withPrisma, getConnectionString } from './db'
+import { withPrisma, getConnectionString, ensureUser } from './db'
 
 export const transferNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     try {
@@ -49,57 +49,39 @@ export const transferNft = async (c: Context<{ Bindings: CloudflareBindings }>) 
         if (connectionString) {
             try {
                 await withPrisma(connectionString, async (prisma) => {
-                    // Helper to ensure user exists
-                    const ensureUser = async (walletAddress: string) => {
-                        let user = await prisma.user.findFirst({
-                            where: {
-                                wallets: { some: { walletAddress } }
-                            }
-                        });
-                        if (!user) {
-                            user = await prisma.user.create({
-                                data: {
-                                    wallets: {
-                                        create: { walletAddress, walletType: 'solana' }
-                                    }
-                                }
-                            });
-                        }
-                        return user.id
-                    }
+                    // Both sides get a user row keyed on (chain, address). This is a Solana
+                    // asset, so both addresses are Solana and must not be case-folded.
+                    await ensureUser(prisma, 'SOLANA', currentOwner)
+                    const newOwnerUserId = await ensureUser(prisma, 'SOLANA', newOwner)
+                    console.log('Transfer DB: both wallets tracked')
 
-                    // Track both wallets
-                    await ensureUser(currentOwner)
-                    const newOwnerUserId = await ensureUser(newOwner)
-                    console.log('Transfer DB: Both wallets tracked')
-
-                    // Record transfer transaction if there's a sale price
                     if (numericSalePrice && numericSalePrice > 0) {
-                        const nft = await prisma.nft.findUnique({
-                            where: { nftId: assetId }
-                        })
+                        // The asset is looked up but not linked: Transaction no longer holds an
+                        // nftId column, so the asset reference travels in metadata.assetId.
+                        const nft = await prisma.nft.findUnique({ where: { assetId } })
 
                         await prisma.transaction.create({
                             data: {
-                                transactionId: `transfer_${assetId}_${Date.now()}`,
-                                userId: newOwnerUserId,
-                                amount: numericSalePrice,
-                                nftId: nft?.id || null,
-                                transactionType: 'TRANSFER',
+                                chain: 'SOLANA',
+                                kind: 'TRANSFER',
                                 status: 'PENDING',
+                                userId: newOwnerUserId,
                                 walletAddress: newOwner,
+                                // Passed as a string so the Decimal column is built from exact
+                                // digits rather than a float.
+                                amount: String(numericSalePrice),
                                 currency: 'SOL',
-                                network: 'solana',
-                                metadata: JSON.stringify({
+                                metadata: {
                                     source: 'nft_transfer',
-                                    assetId: assetId,
+                                    assetId,
+                                    nftRowId: nft?.id ?? null,
                                     from: currentOwner,
                                     to: newOwner,
-                                    salePrice: numericSalePrice
-                                })
-                            }
+                                    salePrice: String(numericSalePrice),
+                                },
+                            },
                         })
-                        console.log('Transfer DB: Transaction recorded')
+                        console.log('Transfer DB: transaction recorded')
                     }
                 })
             } catch (e) {

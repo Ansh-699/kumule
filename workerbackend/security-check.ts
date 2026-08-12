@@ -1,28 +1,27 @@
-// Regression check for the admin auth hole. Run: bun security-check.ts
+// Regression asserts for the two things that can hand out value for free.
+// Run: bun security-check.ts
 //
-// Before the fix, adminAuth accepted two hardcoded keys compiled into the worker
-// ('anshtyagi' and 'admin-secret-key-change-in-production') and also read the key from a
-// ?apiKey= query param. Both are published in a public repo, so /api/admin/* - which dumps
-// every user, wallet, transaction and dispute - was effectively open. These asserts fail if
-// either behaviour comes back.
+// 1. adminAuth. Before it was hardened, two keys were compiled into the worker
+//    ('anshtyagi' and 'admin-secret-key-change-in-production') and the key was also accepted
+//    from a ?apiKey= query param. Both are published in a public repo, so /api/admin/* was
+//    effectively open.
+//
+// 2. Medal eligibility. Points convert directly into a real NFT leaving the vault, so the
+//    rule deciding "may this wallet claim" is money-adjacent. It lives in one pure function
+//    that both the API response and the claim guard use, and these asserts pin it.
+//
+// The v1 payment asserts are gone with payment.ts: Coinbase Commerce shut down 2026-03-31 and
+// the mint fee is now an on-chain SOL transfer verified by solana.ts.
 
 import { Hono } from 'hono'
 import { adminAuth } from './src/admin'
-import { checkChargeStatus, paymentsDemoMode } from './src/payment'
+import { validateTierConfig, medalStatus } from './src/medals'
 
 const assert = {
     strictEqual(actual: unknown, expected: unknown) {
         if (actual !== expected) throw new Error(`expected ${expected}, got ${actual}`)
-    }
+    },
 }
-
-const REAL_KEY = 'a-long-random-value-set-in-cf-secrets'
-
-const app = new Hono<{ Bindings: any }>()
-app.get('/api/admin/dashboard', adminAuth, (c) => c.json({ ok: true }))
-
-const call = (headers: Record<string, string>, env: any, path = '/api/admin/dashboard') =>
-    app.request(path, { headers }, env)
 
 let failures = 0
 const check = async (name: string, expected: number, got: Response | Promise<Response>) => {
@@ -35,83 +34,102 @@ const check = async (name: string, expected: number, got: Response | Promise<Res
         console.error(`  FAIL ${name} -> expected ${expected}, got ${status}`)
     }
 }
+const eq = (name: string, got: unknown, want: unknown) => {
+    const g = JSON.stringify(got)
+    const w = JSON.stringify(want)
+    if (g === w) console.log(`  ok   ${name}`)
+    else {
+        failures++
+        console.error(`  FAIL ${name}: got ${g} want ${w}`)
+    }
+}
+
+// ---------------------------------------------------------------- adminAuth
+
+const REAL_KEY = 'a-long-random-value-set-in-cf-secrets'
+const app = new Hono<{ Bindings: any }>()
+app.get('/api/admin/overview', adminAuth, (c) => c.json({ ok: true }))
+const call = (headers: Record<string, string>, env: any, path = '/api/admin/overview') =>
+    app.request(path, { headers }, env)
 
 console.log('adminAuth:')
-
-// Fails closed when no key is provisioned, rather than falling back to a shared default.
+// Fails closed when no key is provisioned rather than falling back to a shared default.
 await check('no ADMIN_API_KEY configured', 503, call({ 'X-Admin-API-Key': REAL_KEY }, {}))
-
 await check('no key supplied', 401, call({}, { ADMIN_API_KEY: REAL_KEY }))
 await check('wrong key', 401, call({ 'X-Admin-API-Key': 'nope' }, { ADMIN_API_KEY: REAL_KEY }))
-
-// The two keys that used to be hardcoded.
 await check('retired backdoor "anshtyagi"', 401,
     call({ 'X-Admin-API-Key': 'anshtyagi' }, { ADMIN_API_KEY: REAL_KEY }))
 await check('retired backdoor "admin-secret-key-change-in-production"', 401,
     call({ 'X-Admin-API-Key': 'admin-secret-key-change-in-production' }, { ADMIN_API_KEY: REAL_KEY }))
-
 // Query params land in CF request logs, browser history and Referer headers.
 await check('key via ?apiKey= query param', 401,
-    call({}, { ADMIN_API_KEY: REAL_KEY }, `/api/admin/dashboard?apiKey=${REAL_KEY}`))
-
-// A prefix of the real key must not pass.
-await check('prefix of real key', 401,
+    call({}, { ADMIN_API_KEY: REAL_KEY }, `/api/admin/overview?apiKey=${REAL_KEY}`))
+await check('prefix of the real key', 401,
     call({ 'X-Admin-API-Key': REAL_KEY.slice(0, 8) }, { ADMIN_API_KEY: REAL_KEY }))
-
 await check('correct key in header', 200,
     call({ 'X-Admin-API-Key': REAL_KEY }, { ADMIN_API_KEY: REAL_KEY }))
 
-// ---------------------------------------------------------------------------
-// Payment verification. checkChargeStatus used to return status COMPLETED whenever it
-// could not reach Coinbase, when no API key was set, or for any id starting with
-// 'demo_charge_'. mint.ts mints when that status is COMPLETED, so a stub id or an
-// upstream outage handed out free NFTs. It must report COMPLETED only when Coinbase
-// actually said so, or when demo mode is explicitly switched on.
+// ---------------------------------------------------------------- tier config
 
-const expectStatus = async (name: string, expected: string, got: Promise<{ status: string }>) => {
-    const status = (await got).status
-    try {
-        assert.strictEqual(status, expected)
-        console.log(`  ok   ${name} -> ${status}`)
-    } catch {
-        failures++
-        console.error(`  FAIL ${name} -> expected ${expected}, got ${status}`)
-    }
-}
+const tiers = (g: number, s: number, b: number, supply = 1) => [
+    { tier: 'GOLD' as const, requiredPoints: g, supply },
+    { tier: 'SILVER' as const, requiredPoints: s, supply },
+    { tier: 'BRONZE' as const, requiredPoints: b, supply },
+]
 
-console.log('\ncheckChargeStatus (demo mode OFF):')
-await expectStatus('stub demo_charge_ id', 'UNVERIFIED',
-    checkChargeStatus('demo_charge_123_abc', 'a-real-looking-key', false))
-await expectStatus('stub fallback_charge_ id', 'UNVERIFIED',
-    checkChargeStatus('fallback_charge_123_abc', 'a-real-looking-key', false))
-await expectStatus('no API key configured', 'UNVERIFIED',
-    checkChargeStatus('real-charge-id', '', false))
-await expectStatus('API key is whitespace', 'UNVERIFIED',
-    checkChargeStatus('real-charge-id', '   ', false))
-// Unroutable host, so the fetch rejects: an unreachable processor must not mean "paid".
-await expectStatus('payment processor unreachable', 'UNVERIFIED',
-    checkChargeStatus('real-charge-id', 'key', false))
+console.log('\nvalidateTierConfig:')
+eq('the defaults are valid', validateTierConfig(tiers(100, 60, 30)).ok, true)
+eq('equal thresholds allowed', validateTierConfig(tiers(50, 50, 50)).ok, true)
+eq('zero is a legal threshold', validateTierConfig(tiers(0, 0, 0)).ok, true)
+// Gold easier than Silver makes the tiers meaningless.
+eq('inverted gold/silver rejected', validateTierConfig(tiers(10, 60, 30)).ok, false)
+eq('inverted silver/bronze rejected', validateTierConfig(tiers(100, 10, 30)).ok, false)
+eq('fully reversed rejected', validateTierConfig(tiers(30, 60, 100)).ok, false)
+eq('negative points rejected', validateTierConfig(tiers(100, 60, -1)).ok, false)
+eq('fractional points rejected', validateTierConfig(tiers(100, 60.5, 30)).ok, false)
+eq('NaN points rejected', validateTierConfig(tiers(100, NaN, 30)).ok, false)
+eq('zero supply rejected', validateTierConfig(tiers(100, 60, 30, 0)).ok, false)
+eq('negative supply rejected', validateTierConfig(tiers(100, 60, 30, -5)).ok, false)
+eq('missing a tier rejected', validateTierConfig([tiers(100, 60, 30)[0]]).ok, false)
 
-console.log('\ncheckChargeStatus (demo mode ON, explicit opt-in):')
-await expectStatus('stub id is confirmed in demo mode', 'COMPLETED',
-    checkChargeStatus('demo_charge_123_abc', '', true))
+// ---------------------------------------------------------------- medal eligibility
 
-console.log('\npaymentsDemoMode:')
-const gate = (env: any, expected: boolean, name: string) => {
-    try {
-        assert.strictEqual(paymentsDemoMode(env), expected)
-        console.log(`  ok   ${name} -> ${expected}`)
-    } catch {
-        failures++
-        console.error(`  FAIL ${name} -> expected ${expected}`)
-    }
-}
-// Only the exact string "true" opts in; anything else, including a missing var, is off.
-gate({}, false, 'unset')
-gate({ PAYMENTS_DEMO_MODE: 'false' }, false, '"false"')
-gate({ PAYMENTS_DEMO_MODE: '1' }, false, '"1"')
-gate({ PAYMENTS_DEMO_MODE: 'TRUE' }, false, '"TRUE"')
-gate({ PAYMENTS_DEMO_MODE: 'true' }, true, '"true"')
+const medal = (over: Partial<{ requiredPoints: number; supply: number; claimedCount: number; minted: boolean }> = {}) => ({
+    requiredPoints: 100,
+    supply: 3,
+    claimedCount: 0,
+    minted: true,
+    ...over,
+})
+
+console.log('\nmedalStatus:')
+eq('exactly at threshold is claimable', medalStatus(medal(), 100, false).claimable, true)
+eq('above threshold is claimable', medalStatus(medal(), 250, false).claimable, true)
+// Off-by-one at the boundary is the whole risk here.
+eq('one point short is not claimable', medalStatus(medal(), 99, false).claimable, false)
+eq('one point short is not eligible', medalStatus(medal(), 99, false).eligible, false)
+eq('pointsNeeded is exact', medalStatus(medal(), 99, false).pointsNeeded, 1)
+eq('pointsNeeded never negative', medalStatus(medal(), 500, false).pointsNeeded, 0)
+eq('shortfall reason', medalStatus(medal(), 40, false).reason, 'needs 60 more points')
+
+// An already-claimed medal must not be claimable again even when eligible.
+eq('already claimed blocks', medalStatus(medal(), 200, true).claimable, false)
+eq('already claimed reason', medalStatus(medal(), 200, true).reason, 'already claimed')
+eq('already claimed is still eligible', medalStatus(medal(), 200, true).eligible, true)
+
+// An unminted medal has no asset to transfer, so claiming would fail on chain.
+eq('unminted blocks', medalStatus(medal({ minted: false }), 200, false).claimable, false)
+eq('unminted reason', medalStatus(medal({ minted: false }), 200, false).reason, 'not minted yet')
+
+// Supply is the hard cap on how many assets exist.
+eq('supply exhausted blocks', medalStatus(medal({ supply: 3, claimedCount: 3 }), 200, false).claimable, false)
+eq('supply exhausted reason', medalStatus(medal({ supply: 3, claimedCount: 3 }), 200, false).reason, 'supply exhausted')
+eq('over-claimed still blocks', medalStatus(medal({ supply: 3, claimedCount: 9 }), 200, false).claimable, false)
+eq('last unit is claimable', medalStatus(medal({ supply: 3, claimedCount: 2 }), 200, false).claimable, true)
+
+// Shortfall is reported before any other reason, so the user sees the actionable one.
+eq('shortfall reported over supply', medalStatus(medal({ supply: 1, claimedCount: 1 }), 5, false).reason, 'needs 95 more points')
+eq('zero-threshold medal claimable at zero points', medalStatus(medal({ requiredPoints: 0 }), 0, false).claimable, true)
 
 console.log(failures === 0 ? '\nall passed' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

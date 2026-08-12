@@ -7,16 +7,14 @@ declare namespace Cloudflare {
     }
     interface Env {
         SOLANA_RPC_URL: string;
-        COINBASE_API_KEY_NAME: string;
-        COINBASE_API_KEY_PRIVATE_KEY: string;
-        COINBASE_COMMERCE_API_KEY: string;
         DATABASE_URL: string;
         PUBLIC_URL?: string; // Public base URL for metadata/image URLs (e.g., https://your-worker.workers.dev or https://your-domain.com)
-        COINBASE_WEBHOOK_SECRET: string;
         BASE_SEPOLIA_RPC_URL?: string; // Base Sepolia RPC; defaults to publicnode (sepolia.base.org serves stale reads after writes)
         EVM_NFT_ADDRESS?: string;      // KumuleNFT proxy on Base Sepolia
         EVM_MARKET_ADDRESS?: string;   // KumuleMarket proxy on Base Sepolia
-        PAYMENTS_DEMO_MODE?: string; // "true" opts into stub payments that auto-confirm; never set in production
+        MINT_FEE_LAMPORTS?: string;    // Optional Solana mint fee in lamports; unset means minting is free
+        MINT_FEE_TREASURY?: string;    // Solana address that must receive the mint fee
+        MEDAL_VAULT_PRIVATE_KEY?: string; // Base58 secret key of the wallet holding unclaimed medals
 
         ADMIN_API_KEY: string; // Admin API key for /api/admin/*; admin routes 503 until it is set
         ADMIN_WALLET_PRIVATE_KEY: string; // Admin wallet private key (base58) for auto-minting reward NFTs

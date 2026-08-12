@@ -5,8 +5,9 @@ import { generateSigner, publicKey } from '@metaplex-foundation/umi'
 import { createV1 } from '@metaplex-foundation/mpl-core'
 import { base58 } from '@metaplex-foundation/umi/serializers'
 
-import { checkChargeStatus, paymentsDemoMode } from './payment'
-import { withPrisma, getConnectionString } from './db'
+import { verifySolPayment } from './solana'
+import { withPrisma, getConnectionString, ensureUser } from './db'
+import { makeAssetId, toBaseUnits, fromBaseUnits } from './chains'
 import { logBlockchainTransaction, logSecurityEvent, recordAuditedTransaction } from './audit'
 
 export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
@@ -15,7 +16,7 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     
     try {
         const body = await c.req.json()
-        let { uri, name, owner, collection, paymentMethod, chargeId } = body
+        let { uri, name, owner, collection, paymentMethod, feeTxSignature } = body
 
         console.log('[MINT] Params:', JSON.stringify({ name, owner: owner?.slice(0, 8) + '...', paymentMethod, hasUri: !!uri }))
 
@@ -43,10 +44,10 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                 paymentMethod = undefined
             }
         }
-        if (chargeId !== undefined && chargeId !== null) {
-            chargeId = String(chargeId)
-            if (chargeId === 'string' || chargeId === '' || chargeId === 'undefined' || chargeId === 'null') {
-                chargeId = undefined
+        if (feeTxSignature !== undefined && feeTxSignature !== null) {
+            feeTxSignature = String(feeTxSignature)
+            if (['string', '', 'undefined', 'null'].includes(feeTxSignature)) {
+                feeTxSignature = undefined
             }
         }
 
@@ -68,65 +69,68 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                     logSecurityEvent('duplicate_mint_attempt', {
                         actor: owner,
                         target: uri,
-                        metadata: { existingNftId: existingNft.nftId }
+                        metadata: { existingAssetId: existingNft.assetId }
                     })
                     return c.json({
                         error: 'Duplicate mint attempt',
                         message: 'An NFT with this metadata URI already exists',
-                        existingNftId: existingNft.nftId
-                    }, 409) // Conflict status
+                        existingAssetId: existingNft.assetId
+                    }, 409)
                 }
             } catch (e) {
                 console.warn('Duplicate check failed (continuing):', e)
             }
         }
 
-        // Verify payment if method is coinbase
-        if (paymentMethod === 'coinbase') {
-            if (!chargeId) {
-                return c.text('Missing chargeId for Coinbase payment', 402)
+        // Platform mint fee, verified on-chain.
+        //
+        // v1 gated minting on a Coinbase Commerce charge. Commerce shut down 2026-03-31, and
+        // the old flow trusted a charge status that returned COMPLETED whenever it could not
+        // reach Coinbase - so an outage minted for free. A fee is now a SOL transfer to the
+        // treasury that the chain can confirm independently.
+        //
+        // With MINT_FEE_LAMPORTS unset, minting is free: the caller signs and pays their own
+        // rent and network fee, which is what already happens for every mint.
+        const feeLamports = c.env.MINT_FEE_LAMPORTS ? BigInt(c.env.MINT_FEE_LAMPORTS) : 0n
+        const treasury = c.env.MINT_FEE_TREASURY
+
+        if (feeLamports > 0n) {
+            if (!treasury) {
+                console.error('MINT_FEE_LAMPORTS is set but MINT_FEE_TREASURY is not')
+                return c.text('Mint fee is misconfigured', 503)
+            }
+            if (!feeTxSignature) {
+                return c.text(
+                    `Mint fee required: send ${fromBaseUnits(feeLamports, 'SOLANA')} SOL to ${treasury} and pass feeTxSignature`,
+                    402
+                )
             }
 
             const connectionString = getConnectionString(c.env)
-            if (!connectionString) {
-                return c.text('Payment verification unavailable', 503)
+            if (!connectionString) return c.text('Fee verification unavailable', 503)
+
+            // One signature cannot pay for two mints. Checked before the chain lookup because a
+            // replay is cheaper to reject from the database.
+            const alreadySpent = await withPrisma(connectionString, (prisma) =>
+                prisma.transaction.findUnique({ where: { txHash: feeTxSignature } })
+            )
+            if (alreadySpent) {
+                logSecurityEvent('unauthorized_access', {
+                    actor: owner,
+                    target: feeTxSignature,
+                    metadata: { reason: 'fee_signature_reuse' },
+                })
+                return c.text('feeTxSignature has already been used to mint', 409)
             }
 
-            // The charge row is created by createCharge, so a missing row means the caller invented
-            // a chargeId. Status alone is not proof of payment: it must also be a real PAYMENT
-            // charge, belong to the wallet that is minting, and not already have been spent on
-            // another NFT - otherwise one paid charge mints unlimited NFTs for anyone who knows it.
-            const transaction = await withPrisma(connectionString, async (prisma) => {
-                return prisma.transaction.findUnique({ where: { transactionId: chargeId } })
-            })
-
-            if (!transaction) {
-                logSecurityEvent('unauthorized_access', { actor: owner, target: chargeId, metadata: { reason: 'unknown_charge' } })
-                return c.text('Unknown chargeId', 402)
-            }
-            if (transaction.transactionType !== 'PAYMENT') {
-                logSecurityEvent('unauthorized_access', { actor: owner, target: chargeId, metadata: { reason: 'charge_type_mismatch', type: transaction.transactionType } })
-                return c.text('chargeId is not a payment charge', 402)
-            }
-            if (transaction.walletAddress !== owner) {
-                logSecurityEvent('unauthorized_access', { actor: owner, target: chargeId, metadata: { reason: 'charge_wallet_mismatch' } })
-                return c.text('chargeId does not belong to this wallet', 403)
-            }
-            if (transaction.nftId) {
-                logSecurityEvent('unauthorized_access', { actor: owner, target: chargeId, metadata: { reason: 'charge_reuse' } })
-                return c.text('chargeId has already been used to mint', 409)
-            }
-
-            const settled = transaction.status === 'COMPLETED' || transaction.status === 'CONFIRMED'
-            if (!settled) {
-                // Webhook may not have landed yet - ask Coinbase directly, but only for a charge
-                // that already passed the ownership checks above.
-                const paymentStatus = await checkChargeStatus(
-                    chargeId, c.env.COINBASE_COMMERCE_API_KEY, paymentsDemoMode(c.env)
-                )
-                if (paymentStatus.status !== 'COMPLETED' && paymentStatus.status !== 'CONFIRMED') {
-                    return c.text(`Payment not completed. Status: ${paymentStatus.status}`, 402)
-                }
+            const paid = await verifySolPayment(c.env, feeTxSignature, treasury, feeLamports)
+            if (!paid.ok) {
+                logSecurityEvent('unauthorized_access', {
+                    actor: owner,
+                    target: feeTxSignature,
+                    metadata: { reason: 'fee_unverified', detail: paid.reason },
+                })
+                return c.text(`Mint fee not verified: ${paid.reason}`, 402)
             }
         }
 
@@ -205,88 +209,56 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         if (dbConnectionString) {
             try {
                 await withPrisma(dbConnectionString, async (prisma) => {
-                    const walletAddress = owner;
-                    console.log('Mint DB: Processing mint for wallet', walletAddress)
+                    console.log('Mint DB: recording mint for', owner)
 
-                    // 1. Find or Create User and Wallet
-                    let user = await prisma.user.findFirst({
-                        where: {
-                            wallets: {
-                                some: { walletAddress: walletAddress }
-                            }
+                    // ensureUser keys on (chain, address) and swallows the unique-constraint
+                    // race, so two concurrent mints from one wallet cannot create two users.
+                    const userId = await ensureUser(prisma, 'SOLANA', owner)
+
+                    // assetId is the cross-chain identity: the bare mint address on Solana.
+                    // Ownership lives on the Nft row itself now rather than through a wallet
+                    // join, because an asset's owner changes on transfer while its minter does not.
+                    const nft = await prisma.nft.create({
+                        data: {
+                            chain: 'SOLANA',
+                            assetId: makeAssetId('SOLANA', { mintAddress: assetKey }),
+                            mintAddress: assetKey,
+                            name,
+                            metadataUri: uri,
+                            ownerAddress: owner,
+                            creatorAddress: owner,
+                            // imageOk stays false until the indexer resolves the metadata and
+                            // confirms the image loads. v1 had no way to express "minted but
+                            // unrenderable", which is how 152 blank cards shipped.
+                            imageOk: false,
                         },
-                        include: { wallets: true }
-                    });
+                    })
+                    console.log('Mint DB: nft row created', nft.assetId)
 
-                    if (!user) {
-                        console.log('Mint DB: Creating new user + wallet')
-                        user = await prisma.user.create({
-                            data: {
-                                wallets: {
-                                    create: {
-                                        walletAddress: walletAddress,
-                                        walletType: 'solana'
-                                    }
-                                }
+                    await prisma.transaction.create({
+                        data: {
+                            chain: 'SOLANA',
+                            kind: 'MINT',
+                            // The mint transaction is returned unsigned for the wallet to sign,
+                            // so nothing is confirmed at this point.
+                            status: 'PENDING',
+                            userId,
+                            walletAddress: owner,
+                            amount: feeLamports > 0n ? fromBaseUnits(feeLamports, 'SOLANA') : '0',
+                            currency: 'SOL',
+                            // The verified fee payment, which doubles as the replay guard: this
+                            // column is unique, so the same signature cannot fund a second mint.
+                            txHash: feeTxSignature ?? null,
+                            metadata: {
+                                source: 'mint',
+                                assetId: nft.assetId,
+                                nftRowId: nft.id,
+                                paymentMethod: paymentMethod ?? 'self-paid',
+                                mintedAt: new Date().toISOString(),
                             },
-                            include: { wallets: true }
-                        });
-                    }
-
-                    // 2. Get the wallet
-                    const wallet = user.wallets.find((w: { walletAddress: string }) => w.walletAddress === walletAddress) 
-                        || await prisma.wallet.findUnique({ where: { walletAddress: walletAddress } });
-                    
-                    if (wallet) {
-                        console.log('Mint DB: Creating NFT record', assetKey)
-                        await prisma.nft.create({
-                            data: {
-                                nftId: assetKey,
-                                name: name,
-                                metadataUri: uri,
-                                walletId: wallet.id,
-                            }
-                        });
-                        console.log('Mint DB: NFT record created successfully')
-
-                        // 3. Create or update Transaction record
-                        if (paymentMethod === 'coinbase' && chargeId) {
-                            // Get the NFT we just created
-                            const nft = await prisma.nft.findUnique({ where: { nftId: assetKey } });
-                            if (nft) {
-                                await prisma.transaction.update({
-                                    where: { transactionId: chargeId },
-                                    data: {
-                                        nftId: nft.id,
-                                        status: 'COMPLETED'
-                                    }
-                                }).catch((e: unknown) => console.log('Transaction update failed (may not exist):', e));
-                            }
-                        } else if (paymentMethod === 'wallet') {
-                            // Create transaction record for wallet payments
-                            const nft = await prisma.nft.findUnique({ where: { nftId: assetKey } });
-                            await prisma.transaction.create({
-                                data: {
-                                    transactionId: `mint_${assetKey}_${Date.now()}`,
-                                    userId: user.id,
-                                    amount: 0, // Wallet payments typically don't have a fee
-                                    nftId: nft?.id || null,
-                                    transactionType: 'MINT',
-                                    status: 'COMPLETED',
-                                    walletAddress: walletAddress || null,
-                                    txHash: null,
-                                    currency: 'SOL',
-                                    network: 'solana',
-                                    metadata: JSON.stringify({
-                                        source: 'wallet_mint',
-                                        mintedAt: new Date().toISOString()
-                                    })
-                                } as any
-                            }).catch((e: unknown) => console.log('Transaction creation failed:', e));
-                        }
-                    } else {
-                        console.warn('Mint DB: Wallet not found after user creation')
-                    }
+                        },
+                    })
+                    console.log('Mint DB: transaction recorded (PENDING)')
                 });
             } catch (e) {
                 console.error('Failed to record mint in DB (continuing anyway):', e)
