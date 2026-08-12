@@ -5,15 +5,14 @@ package_manager = "yarn"
 resolution = true
 skip-lint = true
 
+# Only one program ships. reward-system and event-escrow were removed: both carried
+# placeholder ids that were never real addresses, neither was ever deployed, and medals need
+# no custom program - they are MPL Core assets minted to the vault and moved by the vault key.
 [programs.localnet]
 nftmarketplace = "3ozh4TQJbeyXFUuXsj7fYmHB5aCVkg24cZN5zZmigR44"
-event-escrow = "EventEscrow1111111111111111111111111111111"
-reward-system = "RewardSystem111111111111111111111111111111"
 
 [programs.devnet]
 nftmarketplace = "3ozh4TQJbeyXFUuXsj7fYmHB5aCVkg24cZN5zZmigR44"
-event-escrow = "EventEscrow1111111111111111111111111111111"
-reward-system = "RewardSystem111111111111111111111111111111"
 
 [registry]
 url = "https://api.apr.dev"
