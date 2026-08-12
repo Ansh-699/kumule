@@ -1,3 +1,19 @@
+// Kumule v2 - multi-chain NFT marketplace (Solana devnet + Base Sepolia).
+//
+// Rewritten from the v1 schema. 21 models became 12. What went and why:
+//   RewardAccount, Interaction, RewardNft, ClaimedReward, RewardDraft
+//     - a second, parallel reward system competing with event medals. Medals won.
+//   EventRewardConfig  - folded into EventMedal; one row per medal beats one row of
+//                        gold_*/silver_*/bronze_* triplets.
+//   Escrow, EventEscrow - folded into Listing. A listing IS the escrow state.
+//   PaymentLog          - existed only to log Coinbase Commerce webhooks, which is a
+//                        product that shut down in March 2026.
+//   Dispute             - no surface in the v2 design.
+//
+// Album and Track are kept: music NFTs with audio streaming are a real v1 feature. They
+// no longer carry their own nftAsset/metadataUri columns though - a minted track points at
+// an Nft row, so on-chain identity has exactly one home.
+
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["driverAdapters"]
@@ -8,448 +24,381 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Display-level chain, matching the badge on every card in the UI. The specific EVM
+// network lives in chainId (84532 = Base Sepolia), so moving to Base mainnet or another
+// L2 later is a chainId change, not a schema migration.
+enum Chain {
+  SOLANA
+  ETHEREUM
+}
+
+enum Category {
+  ART
+  PFP
+  GAMING
+  PHOTOGRAPHY
+  MUSIC
+  UTILITY
+  VIRTUAL_WORLDS
+  OTHER
+}
+
+enum ListingStatus {
+  ACTIVE
+  SOLD
+  CANCELLED
+}
+
+enum MedalTier {
+  GOLD
+  SILVER
+  BRONZE
+}
+
+enum EventStatus {
+  DRAFT
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
 model User {
-  id           String        @id @default(uuid())
-  createdAt    DateTime      @default(now()) @map("created_at")
-  updatedAt    DateTime      @updatedAt @map("updated_at")
-  escrows      Escrow[]
-  transactions Transaction[]
+  id           String             @id @default(uuid())
+  handle       String?            @unique
+  avatarUrl    String?            @map("avatar_url")
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
   wallets      Wallet[]
-  disputes     Dispute[]
-  eventEntries EventEntry[]
-  rewardAccount RewardAccount?
-  createdEvents Event[]      @relation("EventCreator")
-  eventProgress EventUserProgress[]
-  eventRewardClaims EventRewardClaim[]
+  likes        Like[]
+  participants EventParticipant[]
+  claims       MedalClaim[]
+  transactions Transaction[]
 
   @@map("users")
 }
 
+// One user can hold a Solana wallet and an EVM wallet at once, which is the whole point
+// of a multi-chain marketplace. Uniqueness is per (chain, address), not address alone.
 model Wallet {
-  id            String   @id @default(uuid())
-  userId        String   @map("user_id")
-  walletAddress String   @unique @map("wallet_address")
-  walletType    String   @map("wallet_type")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-  nfts          Nft[]
-  user          User     @relation(fields: [userId], references: [id])
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  chain     Chain
+  address   String
+  isPrimary Boolean  @default(false) @map("is_primary")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([chain, address])
+  @@index([userId])
+  @@index([address])
   @@map("wallets")
 }
 
-model Nft {
-  id            String        @id @default(uuid())
-  walletId      String        @map("wallet_id")
-  nftId         String        @unique @map("nft_id")
-  eventId       String?       @map("event_id")
-  badgeId       String?       @map("badge_id")
-  mintTimestamp DateTime      @default(now()) @map("mint_timestamp")
-  metadataUri   String        @map("metadata_uri")
-  name          String
-  escrows       Escrow[]
-  wallet        Wallet        @relation(fields: [walletId], references: [id])
-  transactions  Transaction[]
+model Collection {
+  id              String   @id @default(uuid())
+  chain           Chain
+  chainId         Int?     @map("chain_id")
+  slug            String   @unique
+  name            String
+  description     String?
+  imageUrl        String?  @map("image_url")
+  bannerUrl       String?  @map("banner_url")
+  category        Category @default(OTHER)
+  verified        Boolean  @default(false)
+  creatorAddress  String   @map("creator_address")
+  // Solana: collection mint. EVM: ERC-721 contract address.
+  contractAddress String?  @map("contract_address")
+  itemCount       Int      @default(0) @map("item_count")
+  // Denormalised for the card grid; recomputed by the indexer rather than joined per render.
+  floorPrice      Decimal? @map("floor_price") @db.Decimal(38, 18)
+  volume          Decimal  @default(0) @db.Decimal(38, 18)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  nfts            Nft[]
 
+  @@index([chain])
+  @@index([category])
+  @@index([verified])
+  @@map("collections")
+}
+
+model Nft {
+  id           String   @id @default(uuid())
+  chain        Chain
+  chainId      Int?     @map("chain_id")
+  // Canonical cross-chain identity: Solana uses the mint address, EVM uses
+  // "<contract>:<tokenId>" lowercased. One unique key means lookups never branch on chain.
+  assetId      String   @unique @map("asset_id")
+  // Kept alongside assetId so EVM queries can filter on contract or token without parsing.
+  contractAddress String? @map("contract_address")
+  tokenId         String? @map("token_id")
+  mintAddress     String? @map("mint_address")
+
+  collectionId String?  @map("collection_id")
+  name         String
+  description  String?
+  imageUrl     String?  @map("image_url")
+  metadataUri  String?  @map("metadata_uri")
+  animationUrl String?  @map("animation_url")
+  category     Category @default(OTHER)
+  attributes   Json?
+  // An NFT with no resolvable image is hidden rather than deleted, so the indexer can
+  // recover it if the metadata host comes back. v1 shipped 152 of these.
+  imageOk      Boolean  @default(false) @map("image_ok")
+  hidden       Boolean  @default(false)
+
+  ownerAddress   String  @map("owner_address")
+  creatorAddress String? @map("creator_address")
+  likeCount      Int     @default(0) @map("like_count")
+
+  mintedAt  DateTime @default(now()) @map("minted_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  collection Collection? @relation(fields: [collectionId], references: [id])
+  listings   Listing[]
+  sales      Sale[]
+  likes      Like[]
+  medal      EventMedal?
+  album      Album?
+  track      Track?
+
+  @@index([chain])
+  @@index([ownerAddress])
+  @@index([collectionId])
+  @@index([category])
+  @@index([chain, hidden])
+  @@index([imageOk])
   @@map("nfts")
 }
 
-model Escrow {
+// A listing is the escrow record. On Solana the NFT sits in an escrow PDA; on Base the
+// seller grants an approval and the asset never leaves their wallet. Both are one row.
+model Listing {
+  id            String        @id @default(uuid())
+  nftId         String        @map("nft_id")
+  chain         Chain
+  sellerAddress String        @map("seller_address")
+  price         Decimal       @db.Decimal(38, 18)
+  currency      String // "SOL" | "ETH"
+  status        ListingStatus @default(ACTIVE)
+  // Solana only: the escrow PDA holding the asset.
+  escrowPda     String?       @map("escrow_pda")
+  listTxHash    String?       @map("list_tx_hash")
+  closeTxHash   String?       @map("close_tx_hash")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+  nft           Nft           @relation(fields: [nftId], references: [id], onDelete: Cascade)
+  sale          Sale?
+
+  @@index([status])
+  @@index([chain, status])
+  @@index([sellerAddress])
+  @@index([nftId])
+  @@map("listings")
+}
+
+model Sale {
+  id            String   @id @default(uuid())
+  nftId         String   @map("nft_id")
+  listingId     String?  @unique @map("listing_id")
+  chain         Chain
+  sellerAddress String   @map("seller_address")
+  buyerAddress  String   @map("buyer_address")
+  price         Decimal  @db.Decimal(38, 18)
+  currency      String
+  txHash        String   @unique @map("tx_hash")
+  soldAt        DateTime @default(now()) @map("sold_at")
+  nft           Nft      @relation(fields: [nftId], references: [id], onDelete: Cascade)
+  listing       Listing? @relation(fields: [listingId], references: [id])
+
+  @@index([chain])
+  @@index([soldAt])
+  @@index([nftId])
+  @@map("sales")
+}
+
+model Like {
   id        String   @id @default(uuid())
   userId    String   @map("user_id")
   nftId     String   @map("nft_id")
-  amount    Decimal
-  status    String
   createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  nft       Nft      @relation(fields: [nftId], references: [id])
-  user      User     @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  nft       Nft      @relation(fields: [nftId], references: [id], onDelete: Cascade)
 
-  @@map("escrows")
+  @@unique([userId, nftId])
+  @@index([nftId])
+  @@map("likes")
 }
 
-model Transaction {
-  id              String   @id @default(uuid())
-  userId          String   @map("user_id")
-  amount          Decimal
-  nftId           String?  @map("nft_id")
-  transactionType String   @map("transaction_type") // "MINT", "PAYMENT", "PURCHASE"
-  status          String   // "PENDING", "COMPLETED", "FAILED", "EXPIRED", "CANCELED"
-  transactionId   String   @unique @map("transaction_id") // Coinbase Charge ID or Solana Tx Hash
-  walletAddress   String?  @map("wallet_address") // Payer's wallet address (Solana or EVM)
-  txHash          String?  @map("tx_hash") // On-chain transaction hash/signature
-  currency        String?  // Payment currency (SOL, USDC, ETH, etc.)
-  network         String?  // Network (solana, ethereum, base, etc.)
-  metadata        String?  // JSON string for additional data
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
-  nft             Nft?     @relation(fields: [nftId], references: [id])
-  user            User     @relation(fields: [userId], references: [id])
-
-  @@index([walletAddress])
-  @@index([status])
-  @@index([transactionType])
-  @@map("transactions")
-}
-
-model PaymentLog {
-  id            String   @id @default(uuid())
-  eventType     String   @map("event_type") // charge:created, charge:confirmed, charge:failed, etc.
-  chargeId      String   @map("charge_id") // Coinbase charge ID
-  chargeCode    String?  @map("charge_code") // Coinbase charge code
-  walletAddress String?  @map("wallet_address") // Payer's wallet address
-  txHash        String?  @map("tx_hash") // On-chain transaction hash
-  amount        Decimal?
-  currency      String?
-  network       String?
-  status        String   // Event status
-  rawPayload    String?  @map("raw_payload") // Full webhook payload as JSON
-  verified      Boolean  @default(false) // Whether signature was verified
-  createdAt     DateTime @default(now()) @map("created_at")
-
-  @@index([chargeId])
-  @@index([walletAddress])
-  @@index([eventType])
-  @@map("payment_logs")
-}
-
+// Admin-created. Users join, accumulate points, and claim a medal NFT once they cross a
+// tier threshold. Points are granted through an admin-authenticated endpoint - deliberately
+// mocked rather than derived from verified on-chain activity.
 model Event {
-  id            String       @id @default(uuid())
-  creatorId     String       @map("creator_id")
-  creatorWallet String       @map("creator_wallet") // Creator's SOL wallet
-  name          String
-  description   String?
-  entryFee      Decimal      @map("entry_fee") // SOL amount (0 for free events)
-  eventDate     DateTime?    @map("event_date") // Scheduled event date
-  status        String       @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED
-  completedAt   DateTime?    @map("completed_at") // When event actually happened
-  createdAt     DateTime     @default(now()) @map("created_at")
-  updatedAt     DateTime     @updatedAt @map("updated_at")
-  entries       EventEntry[]
-  disputes      Dispute[]
-  escrows       EventEscrow[]
-  creator       User         @relation("EventCreator", fields: [creatorId], references: [id])
-  rewardNfts    EventRewardNft[]
-  userProgress  EventUserProgress[]
-  rewardClaims  EventRewardClaim[]
-  rewardConfig  EventRewardConfig?
+  id          String             @id @default(uuid())
+  slug        String             @unique
+  name        String
+  description String?
+  imageUrl    String?            @map("image_url")
+  status      EventStatus        @default(DRAFT)
+  startsAt    DateTime?          @map("starts_at")
+  endsAt      DateTime?          @map("ends_at")
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+  medals      EventMedal[]
+  participants EventParticipant[]
+  claims      MedalClaim[]
 
-  @@index([creatorId])
   @@index([status])
   @@map("events")
 }
 
-// Event Reward Configuration - set during event creation for auto-minting
-model EventRewardConfig {
-  id              String   @id @default(uuid())
-  eventId         String   @unique @map("event_id")
-  
-  // Gold NFT config
-  goldSupply      Int      @default(1) @map("gold_supply")
-  goldPoints      Int      @default(100) @map("gold_points")
-  goldImageUrl    String?  @map("gold_image_url")
-  goldName        String   @default("Gold Medal") @map("gold_name")
-  
-  // Silver NFT config
-  silverSupply    Int      @default(3) @map("silver_supply")
-  silverPoints    Int      @default(60) @map("silver_points")
-  silverImageUrl  String?  @map("silver_image_url")
-  silverName      String   @default("Silver Medal") @map("silver_name")
-  
-  // Bronze NFT config
-  bronzeSupply    Int      @default(5) @map("bronze_supply")
-  bronzePoints    Int      @default(30) @map("bronze_points")
-  bronzeImageUrl  String?  @map("bronze_image_url")
-  bronzeName      String   @default("Bronze Medal") @map("bronze_name")
-  
-  // Minting status
-  mintingStatus   String   @default("PENDING") @map("minting_status") // PENDING, MINTING, COMPLETED, PARTIAL, FAILED
-  mintingError    String?  @map("minting_error")
-  mintedCount     Int      @default(0) @map("minted_count")
-  totalToMint     Int      @default(0) @map("total_to_mint")
-  
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
-  
-  event           Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  
-  @@map("event_reward_configs")
+// One row per medal tier per event. Minted to the vault wallet up front, then transferred
+// to a claimant. nftId links to the vault-held asset once minted.
+model EventMedal {
+  id             String       @id @default(uuid())
+  eventId        String       @map("event_id")
+  tier           MedalTier
+  chain          Chain        @default(SOLANA)
+  name           String
+  description    String?
+  imageUrl       String?      @map("image_url")
+  metadataUri    String?      @map("metadata_uri")
+  requiredPoints Int          @map("required_points")
+  supply         Int          @default(1)
+  claimedCount   Int          @default(0) @map("claimed_count")
+  // The vault-held asset backing this medal, once minted.
+  nftId          String?      @unique @map("nft_id")
+  mintTxHash     String?      @map("mint_tx_hash")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  event          Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  nft            Nft?         @relation(fields: [nftId], references: [id])
+  claims         MedalClaim[]
+
+  @@unique([eventId, tier])
+  @@index([eventId])
+  @@map("event_medals")
 }
 
-model EventEntry {
-  id            String        @id @default(uuid())
-  userId        String        @map("user_id")
-  eventId       String        @map("event_id")
-  walletAddress String        @map("wallet_address")
-  amount        Decimal       // Amount paid to enter (entry fee)
-  txHash        String?       @map("tx_hash") // Transaction hash for entry payment
-  status        String        @default("ACTIVE") // ACTIVE | COMPLETED | DISPUTED | REFUNDED
-  createdAt     DateTime      @default(now()) @map("created_at")
-  updatedAt     DateTime      @updatedAt @map("updated_at")
-  user          User          @relation(fields: [userId], references: [id])
-  event         Event         @relation(fields: [eventId], references: [id])
-  escrow        EventEscrow?
+model EventParticipant {
+  id             String   @id @default(uuid())
+  eventId        String   @map("event_id")
+  userId         String   @map("user_id")
+  walletAddress  String   @map("wallet_address")
+  chain          Chain
+  points         Int      @default(0)
+  tasksCompleted Int      @default(0) @map("tasks_completed")
+  joinedAt       DateTime @default(now()) @map("joined_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  event          Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([userId])
+  @@unique([eventId, userId])
   @@index([eventId])
   @@index([walletAddress])
-  @@map("event_entries")
+  @@map("event_participants")
 }
 
-model EventEscrow {
-  id              String      @id @default(uuid())
-  eventId         String      @map("event_id")
-  eventEntryId    String?     @unique @map("event_entry_id")
-  eventIdOnChain  String      @map("event_id_on_chain") // On-chain event ID (stored as string)
-  participantId   String      @map("participant_id")
-  participantWallet String    @map("participant_wallet")
-  eventCreatorWallet String   @map("event_creator_wallet")
-  escrowPda       String      @map("escrow_pda") // PDA address on-chain
-  amount          Decimal     // SOL amount
-  status          String      // PENDING | FUNDED | CONFIRMED | RELEASED | DISPUTED | REFUNDED
-  depositTxHash   String?     @map("deposit_tx_hash") // SOL deposit transaction
-  releaseTxHash   String?     @map("release_tx_hash") // SOL release transaction
-  confirmedAt     DateTime?   @map("confirmed_at")
-  releasedAt      DateTime?   @map("released_at")
-  createdAt       DateTime    @default(now()) @map("created_at")
-  updatedAt       DateTime    @updatedAt @map("updated_at")
-  event           Event       @relation(fields: [eventId], references: [id])
-  eventEntry      EventEntry? @relation(fields: [eventEntryId], references: [id])
+model MedalClaim {
+  id            String    @id @default(uuid())
+  medalId       String    @map("medal_id")
+  eventId       String    @map("event_id")
+  userId        String    @map("user_id")
+  walletAddress String    @map("wallet_address")
+  pointsAtClaim Int       @map("points_at_claim")
+  txHash        String?   @map("tx_hash")
+  claimedAt     DateTime  @default(now()) @map("claimed_at")
+  medal         EventMedal @relation(fields: [medalId], references: [id], onDelete: Cascade)
+  event         Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([eventId])
-  @@index([participantWallet])
-  @@index([status])
-  @@index([escrowPda])
-  @@map("event_escrows")
-}
-
-model RewardAccount {
-  id                String        @id @default(uuid())
-  userId            String        @unique @map("user_id")
-  walletAddress     String        @map("wallet_address")
-  interactionCount  Int           @default(0) @map("interaction_count") // Total interaction points
-  claimedNfts       Int           @default(0) @map("claimed_nfts") // Number of NFTs claimed
-  rewardPda         String?       @map("reward_pda") // On-chain reward account PDA
-  lastInteractionAt DateTime?     @map("last_interaction_at")
-  createdAt         DateTime      @default(now()) @map("created_at")
-  updatedAt         DateTime      @updatedAt @map("updated_at")
-  user              User          @relation(fields: [userId], references: [id])
-  interactions      Interaction[]
-  claimedRewards    ClaimedReward[]
-
-  @@index([walletAddress])
-  @@index([userId])
-  @@map("reward_accounts")
-}
-
-model Interaction {
-  id                String        @id @default(uuid())
-  rewardAccountId   String        @map("reward_account_id")
-  interactionType   String        @map("interaction_type") // "CLICK", "VIEW", "SHARE", etc.
-  points            Int           @default(1) // Points earned
-  metadata          String?       // JSON string for additional data
-  createdAt         DateTime      @default(now()) @map("created_at")
-  rewardAccount     RewardAccount @relation(fields: [rewardAccountId], references: [id])
-
-  @@index([rewardAccountId])
-  @@index([createdAt])
-  @@map("interactions")
-}
-
-model RewardDraft {
-  id                String        @id @default(uuid())
-  name              String
-  description       String?
-  metadataUri       String?       @map("metadata_uri") // Uploaded metadata URI
-  imageUrl          String?       @map("image_url") // Uploaded image URI
-  imageFile         String?       @map("image_file") // Original file name
-  requiredPoints    Int           @default(100) @map("required_points")
-  rewardType        String        @default("MUSIC_NFT") @map("reward_type")
-  totalSupply       Int           @default(1) @map("total_supply")
-  isListed          Boolean       @default(false) @map("is_listed") // Whether it's listed as available reward
-  createdAt         DateTime      @default(now()) @map("created_at")
-  updatedAt         DateTime      @updatedAt @map("updated_at")
-
-  @@index([isListed])
-  @@map("reward_drafts")
-}
-
-model RewardNft {
-  id                String        @id @default(uuid())
-  name              String
-  description       String?
-  nftAsset          String        @unique @map("nft_asset") // On-chain NFT asset address
-  metadataUri       String        @map("metadata_uri")
-  imageUrl          String?       @map("image_url")
-  requiredPoints    Int           @map("required_points") // Points needed to claim
-  rewardType        String        @default("MUSIC_NFT") @map("reward_type") // "MUSIC_NFT", "BADGE", etc.
-  adminWallet       String        @map("admin_wallet") // Admin wallet that owns the NFT (vault)
-  isActive          Boolean       @default(true) @map("is_active")
-  totalSupply       Int           @default(1) @map("total_supply") // How many can be claimed
-  claimedCount      Int           @default(0) @map("claimed_count") // How many have been claimed
-  createdAt         DateTime      @default(now()) @map("created_at")
-  updatedAt         DateTime      @updatedAt @map("updated_at")
-  claimedRewards    ClaimedReward[]
-
-  @@index([isActive])
-  @@index([requiredPoints])
-  @@map("reward_nfts")
-}
-
-model ClaimedReward {
-  id                String        @id @default(uuid())
-  rewardAccountId   String        @map("reward_account_id")
-  rewardNftId       String?       @map("reward_nft_id") // Reference to RewardNft
-  nftId             String?       @map("nft_id") // NFT that was claimed
-  nftAsset          String?       @map("nft_asset") // On-chain NFT asset address
-  pointsUsed        Int           @map("points_used") // Points used to claim
-  rewardType        String        @map("reward_type") // "MUSIC_NFT", "BADGE", etc.
-  txHash            String?       @map("tx_hash") // Transaction hash for claim
-  metadata          String?       // JSON string for additional data
-  createdAt         DateTime      @default(now()) @map("created_at")
-  rewardAccount     RewardAccount @relation(fields: [rewardAccountId], references: [id])
-  rewardNft         RewardNft?    @relation(fields: [rewardNftId], references: [id])
-
-  @@index([rewardAccountId])
-  @@index([nftAsset])
-  @@index([rewardNftId])
-  @@map("claimed_rewards")
-}
-
-model Dispute {
-  id              String   @id @default(uuid())
-  userId          String   @map("user_id")
-  eventId         String?  @map("event_id")
-  eventEntryId    String?  @map("event_entry_id")
-  walletAddress   String   @map("wallet_address") // User's SOL wallet
-  amount          Decimal  // Amount in dispute (from event entry fee)
-  reason          String   // User's dispute reason/description
-  transactionId   String?  @map("transaction_id") // Original entry transaction reference
-  status          String   @default("PENDING") // PENDING | APPROVED | REJECTED | REFUNDED
-  adminNotes      String?  @map("admin_notes") // Admin's resolution notes
-  refundTxHash    String?  @map("refund_tx_hash") // Refund transaction signature (when manually refunded)
-  createdAt       DateTime @default(now()) @map("created_at")
-  resolvedAt      DateTime? @map("resolved_at")
-  user            User     @relation(fields: [userId], references: [id])
-  event           Event?   @relation(fields: [eventId], references: [id])
-
-  @@index([userId])
-  @@index([status])
-  @@index([walletAddress])
-  @@index([eventId])
-  @@map("disputes")
-}
-
-// Event Reward NFTs - Gold, Silver, Bronze NFTs for each event
-model EventRewardNft {
-  id              String   @id @default(uuid())
-  eventId         String   @map("event_id")
-  medalType       String   @map("medal_type") // "GOLD" | "SILVER" | "BRONZE"
-  name            String
-  description     String?
-  imageUrl        String   @map("image_url")
-  metadataUri     String   @map("metadata_uri")
-  nftAsset        String?  @unique @map("nft_asset") // On-chain NFT address (after minting)
-  requiredPoints  Int      @map("required_points") // Points needed to claim
-  totalSupply     Int      @default(1) @map("total_supply")
-  claimedCount    Int      @default(0) @map("claimed_count")
-  isActive        Boolean  @default(true) @map("is_active")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
-  event           Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  claims          EventRewardClaim[]
-
-  @@index([eventId])
-  @@index([medalType])
-  @@map("event_reward_nfts")
-}
-
-// Track user progress/points for each event
-model EventUserProgress {
-  id              String   @id @default(uuid())
-  userId          String   @map("user_id")
-  eventId         String   @map("event_id")
-  walletAddress   String   @map("wallet_address")
-  totalPoints     Int      @default(0) @map("total_points")
-  tasksCompleted  Int      @default(0) @map("tasks_completed")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
-  user            User     @relation(fields: [userId], references: [id])
-  event           Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, eventId])
+  // One claim per user per medal, enforced by the database rather than by handler logic.
+  @@unique([medalId, userId])
   @@index([eventId])
   @@index([walletAddress])
-  @@map("event_user_progress")
+  @@map("medal_claims")
 }
 
-// Track reward NFT claims
-model EventRewardClaim {
-  id              String   @id @default(uuid())
-  rewardNftId     String   @map("reward_nft_id")
-  userId          String   @map("user_id")
-  eventId         String   @map("event_id")
-  walletAddress   String   @map("wallet_address")
-  nftAsset        String?  @map("nft_asset") // Claimed NFT address
-  txHash          String?  @map("tx_hash")
-  pointsUsed      Int      @map("points_used")
-  claimedAt       DateTime @default(now()) @map("claimed_at")
-  rewardNft       EventRewardNft @relation(fields: [rewardNftId], references: [id])
-  user            User     @relation(fields: [userId], references: [id])
-  event           Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+// ---------------------------------------------------------------------------
+// Music NFTs. An album groups tracks; either the album or an individual track can be
+// minted on either chain. Audio lives in R2 and streams through the worker's /cdn/audio
+// route, which supports range requests so seeking works.
 
-  @@index([userId])
-  @@index([eventId])
-  @@index([rewardNftId])
-  @@map("event_reward_claims")
-}
-
-// Music Album - container for tracks
 model Album {
-  id              String   @id @default(uuid())
-  name            String
-  artist          String
-  description     String?
-  coverUrl        String   @map("cover_url") // R2 URL for album artwork
-  releaseDate     DateTime? @map("release_date")
-  genre           String?
-  totalTracks     Int      @default(0) @map("total_tracks")
-  price           Decimal? // Price for full album purchase
-  nftAsset        String?  @unique @map("nft_asset") // On-chain NFT address if minted
-  metadataUri     String?  @map("metadata_uri")
-  creatorWallet   String   @map("creator_wallet")
-  isPublished     Boolean  @default(false) @map("is_published")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
-  tracks          Track[]
+  id             String    @id @default(uuid())
+  chain          Chain
+  slug           String    @unique
+  name           String
+  artist         String
+  description    String?
+  coverUrl       String    @map("cover_url")
+  genre          String?
+  releaseDate    DateTime? @map("release_date")
+  // Price for buying the album as a whole; individual tracks price themselves.
+  price          Decimal?  @db.Decimal(38, 18)
+  currency       String?
+  creatorAddress String    @map("creator_address")
+  isPublished    Boolean   @default(false) @map("is_published")
+  trackCount     Int       @default(0) @map("track_count")
+  // Set once the album itself is minted as a single NFT.
+  nftId          String?   @unique @map("nft_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  nft            Nft?      @relation(fields: [nftId], references: [id])
+  tracks         Track[]
 
+  @@index([chain])
   @@index([artist])
-  @@index([creatorWallet])
+  @@index([creatorAddress])
   @@index([isPublished])
   @@map("albums")
 }
 
-// Music Track - individual song in an album
 model Track {
-  id              String   @id @default(uuid())
-  albumId         String   @map("album_id")
-  title           String
-  description     String?
-  audioUrl        String   @map("audio_url") // R2 URL for audio file
-  artworkUrl      String?  @map("artwork_url") // R2 URL for track-specific artwork
-  duration        Int?     // Duration in seconds
-  trackNumber     Int      @map("track_number")
-  price           Decimal? // Price for individual track purchase
-  integrityHash   String?  @map("integrity_hash") // SHA-256 hash for verification
-  nftAsset        String?  @unique @map("nft_asset") // On-chain NFT address if minted
-  metadataUri     String?  @map("metadata_uri")
-  isPreviewable   Boolean  @default(true) @map("is_previewable") // Allow preview streaming
-  previewDuration Int      @default(30) @map("preview_duration") // Preview duration in seconds
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
-  album           Album    @relation(fields: [albumId], references: [id], onDelete: Cascade)
+  id          String   @id @default(uuid())
+  albumId     String   @map("album_id")
+  title       String
+  description String?
+  audioUrl    String   @map("audio_url")
+  artworkUrl  String?  @map("artwork_url")
+  durationSec Int?     @map("duration_sec")
+  trackNumber Int      @map("track_number")
+  price       Decimal? @db.Decimal(38, 18)
+  currency    String?
+  // SHA-256 of the uploaded audio, so a swapped file is detectable after minting.
+  integrityHash String? @map("integrity_hash")
+  isPreviewable   Boolean @default(true) @map("is_previewable")
+  previewSeconds  Int     @default(30) @map("preview_seconds")
+  // Set once this track is minted as its own NFT.
+  nftId       String?  @unique @map("nft_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  album       Album    @relation(fields: [albumId], references: [id], onDelete: Cascade)
+  nft         Nft?     @relation(fields: [nftId], references: [id])
 
+  @@unique([albumId, trackNumber])
   @@index([albumId])
-  @@index([nftAsset])
   @@map("tracks")
+}
+
+// Mint fees and marketplace purchases. Kept for the admin dashboard and user history.
+model Transaction {
+  id            String   @id @default(uuid())
+  userId        String?  @map("user_id")
+  chain         Chain
+  kind          String // "MINT" | "PURCHASE" | "MEDAL_CLAIM"
+  status        String // "PENDING" | "CONFIRMED" | "FAILED"
+  walletAddress String?  @map("wallet_address")
+  amount        Decimal? @db.Decimal(38, 18)
+  currency      String?
+  txHash        String?  @unique @map("tx_hash")
+  metadata      Json?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  user          User?    @relation(fields: [userId], references: [id])
+
+  @@index([walletAddress])
+  @@index([chain])
+  @@index([status])
+  @@map("transactions")
 }
