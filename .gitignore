@@ -23,3 +23,9 @@ test-ledger/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Keypairs. A private key must never be tracked - .keypairs/buyer.json was committed to this
+# public repo (devnet wallet 4fHpFMJGLQ5HZgJmXvWceaN3N5LwEtsFi9fb3RF9Wvky, 0.6 devnet SOL). Untracked here;
+# it remains in history, so treat that key as burned and never fund it.
+.keypairs/
+*.keypair.json
