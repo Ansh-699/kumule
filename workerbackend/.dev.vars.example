@@ -12,6 +12,12 @@ COINBASE_COMMERCE_API_KEY="your-coinbase-commerce-api-key"
 # Coinbase Commerce webhook shared secret - webhooks are rejected without it
 COINBASE_WEBHOOK_SECRET="your-coinbase-webhook-shared-secret"
 
+# Stub payments that auto-confirm without a real charge. Local/testing only.
+# NEVER set this in production: it makes /api/payment/create hand out fake "paid"
+# charges, and mint.ts mints whenever a charge reads COMPLETED. Leave it unset and
+# payment endpoints fail closed with 503 until COINBASE_COMMERCE_API_KEY is configured.
+# PAYMENTS_DEMO_MODE="true"
+
 # Admin API key for /api/admin/* - no default, admin routes 503 until this is set
 ADMIN_API_KEY="generate-a-long-random-value"
 

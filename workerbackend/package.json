@@ -4,7 +4,13 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "typecheck": "tsc --noEmit",
+    "test:api": "node api-test.mjs",
+    "test:security": "bun security-check.ts",
+    "db:check": "node prisma/apply-bootstrap.mjs",
+    "db:repair": "node prisma/apply-bootstrap.mjs --apply",
+    "db:bootstrap:build": "node prisma/build-bootstrap.mjs > prisma/bootstrap.sql"
   },
   "dependencies": {
     "@coinbase/cdp-sdk": "^1.38.6",

@@ -5,7 +5,7 @@ import { generateSigner, publicKey } from '@metaplex-foundation/umi'
 import { createV1 } from '@metaplex-foundation/mpl-core'
 import { base58 } from '@metaplex-foundation/umi/serializers'
 
-import { checkChargeStatus } from './payment'
+import { checkChargeStatus, paymentsDemoMode } from './payment'
 import { withPrisma, getConnectionString } from './db'
 import { logBlockchainTransaction, logSecurityEvent, recordAuditedTransaction } from './audit'
 
@@ -121,7 +121,9 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             if (!settled) {
                 // Webhook may not have landed yet - ask Coinbase directly, but only for a charge
                 // that already passed the ownership checks above.
-                const paymentStatus = await checkChargeStatus(chargeId, c.env.COINBASE_COMMERCE_API_KEY)
+                const paymentStatus = await checkChargeStatus(
+                    chargeId, c.env.COINBASE_COMMERCE_API_KEY, paymentsDemoMode(c.env)
+                )
                 if (paymentStatus.status !== 'COMPLETED' && paymentStatus.status !== 'CONFIRMED') {
                     return c.text(`Payment not completed. Status: ${paymentStatus.status}`, 402)
                 }

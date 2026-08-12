@@ -1,6 +1,12 @@
 import { Context } from 'hono'
 import { withPrisma, getConnectionString } from './db'
 
+// Demo mode is opt-in via env, never inferred from a missing key or a failed API call.
+// Inferring it was the bug: every error path returned "payment COMPLETED", and mint.ts
+// gates minting on exactly that, so any Coinbase outage handed out free NFTs.
+export const paymentsDemoMode = (env: CloudflareBindings): boolean =>
+    env.PAYMENTS_DEMO_MODE === 'true'
+
 // Helper to log transaction to database
 async function logTransaction(
     connectionString: string,
@@ -77,27 +83,27 @@ export const createCharge = async (c: Context<{ Bindings: CloudflareBindings }>)
             })
         }
 
-        const apiKey = c.env.COINBASE_COMMERCE_API_KEY;
-        console.log(`[Payment] Checking API Key. Present: ${!!apiKey}, Length: ${apiKey ? apiKey.length : 0}`);
+        if (typeof amount !== 'number' || !isFinite(amount) || amount <= 0) {
+            return c.json({ error: 'amount must be a positive number' }, 400)
+        }
 
-         //DEMO MODE FOR TESTING
-           console.log('[Payment] Forcing demo mode as requested by user');
-         return await getDemoResponse('Forced demo mode')
+        const apiKey = c.env.COINBASE_COMMERCE_API_KEY
+        const demo = paymentsDemoMode(c.env)
 
-       /*
         if (!apiKey || apiKey.trim() === '') {
-            console.log('[Payment] API Key is missing or empty');
-            return await getDemoResponse('API key not configured')
-        }*/
-            
-        
+            if (demo) return await getDemoResponse('PAYMENTS_DEMO_MODE=true, no API key configured')
+            // Fail closed: a charge nobody can pay must not look like a charge that was paid.
+            return c.json({
+                error: 'Payments are not configured. Set COINBASE_COMMERCE_API_KEY, or set PAYMENTS_DEMO_MODE=true for a non-production stub.'
+            }, 503)
+        }
 
         // Create a charge using Coinbase Commerce API
         const response = await fetch('https://api.commerce.coinbase.com/charges', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CC-Api-Key': c.env.COINBASE_COMMERCE_API_KEY,
+                'X-CC-Api-Key': apiKey,
                 'X-CC-Version': '2018-03-22'
             },
             body: JSON.stringify({
@@ -118,9 +124,10 @@ export const createCharge = async (c: Context<{ Bindings: CloudflareBindings }>)
         if (!response.ok) {
             const errorText = await response.text()
 
-            // Check if it's an authentication error - fall back to demo mode
+            // A rejected API key is a misconfiguration, not a licence to fake a charge.
             if (errorText.includes('authentication_error') || errorText.includes('no_such_api_key')) {
-                return await getDemoResponse('Invalid API key')
+                if (demo) return await getDemoResponse('PAYMENTS_DEMO_MODE=true, API key rejected')
+                return c.json({ error: 'Coinbase rejected the configured API key.' }, 503)
             }
 
             throw new Error(`Commerce API error: ${errorText}`)
@@ -148,43 +155,59 @@ export const createCharge = async (c: Context<{ Bindings: CloudflareBindings }>)
 
     } catch (error) {
         console.error('Create charge error:', error)
-
-        // Last resort: return demo mode instead of 500 error
-        const chargeId = `fallback_charge_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-        const demoAddress = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb'
-        
-        // Try to log the fallback transaction
-        const connectionString = getConnectionString(c.env)
-        if (connectionString) {
-            await logTransaction(connectionString, chargeId, 0, 'USD', undefined, 'coinbase')
-        }
-
-        return c.json({
-            chargeId: chargeId,
-            address: demoAddress,
-            amount: 0,
-            currency: 'USD',
-            hostedUrl: `https://commerce.coinbase.com/checkout/${chargeId}`,
-            isDemoMode: true,
-            error: String(error),
-            note: 'Demo mode (error fallback): Payment API encountered an error. Configure COINBASE_COMMERCE_API_KEY for production use.'
-        }, 200)
+        // Previously returned a fake "paid" charge with HTTP 200 here, which is how an
+        // upstream outage turned into free mints. Surface the failure instead.
+        return c.json({ error: 'Failed to create charge', details: String(error) }, 502)
     }
 }
 
-export const checkChargeStatus = async (chargeId: string, apiKey?: string) => {
-    // Check if this is a demo charge ID (starts with 'demo_charge_' or 'fallback_charge_')
+// Anything that is not a verified COMPLETED charge reports UNVERIFIED. Callers gate on
+// COMPLETED, so an unknown or unreachable charge denies value instead of granting it.
+type ChargeStatus = {
+    status: string
+    chargeId: string
+    code?: string
+    timeline: any[]
+    payments: any[]
+    isDemo: boolean
+    reason?: string
+}
+
+const unverified = (chargeId: string, reason: string): ChargeStatus => ({
+    status: 'UNVERIFIED',
+    chargeId,
+    timeline: [],
+    payments: [],
+    isDemo: false,
+    reason
+})
+
+const demoConfirmed = (chargeId: string): ChargeStatus => ({
+    status: 'COMPLETED',
+    chargeId,
+    timeline: [],
+    payments: [],
+    isDemo: true,
+    reason: 'PAYMENTS_DEMO_MODE=true'
+})
+
+// `demoAllowed` must come from paymentsDemoMode(env). Without it this function never
+// reports COMPLETED unless Coinbase actually said so.
+export const checkChargeStatus = async (
+    chargeId: string, apiKey?: string, demoAllowed = false
+): Promise<ChargeStatus> => {
     const isDemoCharge = chargeId.startsWith('demo_charge_') || chargeId.startsWith('fallback_charge_')
 
-    if (!apiKey || apiKey.trim() === '' || isDemoCharge) {
-        // Demo mode: always return confirmed
-        return {
-            status: 'COMPLETED',
-            chargeId,
-            timeline: [],
-            payments: [],
-            isDemo: true
-        }
+    if (isDemoCharge) {
+        return demoAllowed
+            ? demoConfirmed(chargeId)
+            : unverified(chargeId, 'stub charge id cannot be verified with a real payment processor')
+    }
+
+    if (!apiKey || apiKey.trim() === '') {
+        return demoAllowed
+            ? demoConfirmed(chargeId)
+            : unverified(chargeId, 'COINBASE_COMMERCE_API_KEY is not configured')
     }
 
     try {
@@ -198,19 +221,18 @@ export const checkChargeStatus = async (chargeId: string, apiKey?: string) => {
         if (!response.ok) {
             const errorText = await response.text()
 
-            // Check if it's an authentication error - fall back to demo mode
             if (errorText.includes('authentication_error') || errorText.includes('no_such_api_key')) {
-                console.log('Invalid API key detected in checkChargeStatus, using demo mode')
-                return {
-                    status: 'COMPLETED',
-                    chargeId,
-                    timeline: [],
-                    payments: [],
-                    isDemo: true
-                }
+                console.error('checkChargeStatus: Coinbase rejected the API key')
+                return demoAllowed
+                    ? demoConfirmed(chargeId)
+                    : unverified(chargeId, 'Coinbase rejected the configured API key')
             }
 
-            throw new Error('Failed to fetch charge status')
+            if (response.status === 404) {
+                return unverified(chargeId, 'charge not found')
+            }
+
+            throw new Error(`Failed to fetch charge status: ${response.status}`)
         }
 
         const data = await response.json() as any
@@ -231,46 +253,29 @@ export const checkChargeStatus = async (chargeId: string, apiKey?: string) => {
             isDemo: false
         }
     } catch (error) {
-        // If any error occurs, fall back to demo mode
-        console.log('Error in checkChargeStatus, falling back to demo mode:', error)
-        return {
-            status: 'COMPLETED',
-            chargeId,
-            timeline: [],
-            payments: [],
-            isDemo: true
-        }
+        // An unreachable payment processor means "unknown", never "paid".
+        console.error('Error in checkChargeStatus:', error)
+        return demoAllowed
+            ? demoConfirmed(chargeId)
+            : unverified(chargeId, `payment processor unreachable: ${String(error)}`)
     }
 }
 
 export const verifyPayment = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     try {
         const chargeId = c.req.param('id')
-        const result = await checkChargeStatus(chargeId, c.env.COINBASE_COMMERCE_API_KEY)
-
-        if (result.isDemo) {
-            return c.json({
-                status: 'COMPLETED',
-                chargeId,
-                isDemoMode: true,
-                note: 'Demo mode - payment auto-confirmed'
-            })
-        }
-
-        return c.json(result)
+        const result = await checkChargeStatus(
+            chargeId, c.env.COINBASE_COMMERCE_API_KEY, paymentsDemoMode(c.env)
+        )
+        return c.json({ ...result, isDemoMode: result.isDemo })
 
     } catch (error) {
         console.error('Verify payment error:', error)
-
-        // Fallback to demo mode instead of 500 error
-        const chargeId = c.req.param('id')
         return c.json({
-            status: 'COMPLETED',
-            chargeId,
-            isDemoMode: true,
-            error: String(error),
-            note: 'Demo mode (error fallback) - payment auto-confirmed'
-        }, 200)
+            status: 'UNVERIFIED',
+            chargeId: c.req.param('id'),
+            error: String(error)
+        }, 502)
     }
 }
 
@@ -285,9 +290,12 @@ export const checkPaymentStatus = async (c: Context<{ Bindings: CloudflareBindin
         }
 
         // Check status from Coinbase API
-        const result = await checkChargeStatus(chargeId, c.env.COINBASE_COMMERCE_API_KEY)
-        
-        // Map Coinbase status to our transaction status
+        const result = await checkChargeStatus(
+            chargeId, c.env.COINBASE_COMMERCE_API_KEY, paymentsDemoMode(c.env)
+        )
+
+        // Map Coinbase status to our transaction status.
+        // UNVERIFIED is deliberately absent: unmapped statuses fall through to PENDING.
         const statusMap: Record<string, string> = {
             'NEW': 'PENDING',
             'PENDING': 'PENDING',
@@ -409,10 +417,10 @@ export const checkPaymentStatus = async (c: Context<{ Bindings: CloudflareBindin
                 status: 'COMPLETED',
                 chargeId,
                 isDemoMode: true,
-                note: 'Demo mode - payment auto-confirmed'
+                note: 'PAYMENTS_DEMO_MODE=true - payment auto-confirmed, not a real payment'
             })
         }
-        
+
         return c.json({
             status: transactionStatus,
             chargeId: result.chargeId,

@@ -7,8 +7,14 @@
 // either behaviour comes back.
 
 import { Hono } from 'hono'
-import assert from 'node:assert'
 import { adminAuth } from './src/admin'
+import { checkChargeStatus, paymentsDemoMode } from './src/payment'
+
+const assert = {
+    strictEqual(actual: unknown, expected: unknown) {
+        if (actual !== expected) throw new Error(`expected ${expected}, got ${actual}`)
+    }
+}
 
 const REAL_KEY = 'a-long-random-value-set-in-cf-secrets'
 
@@ -19,7 +25,7 @@ const call = (headers: Record<string, string>, env: any, path = '/api/admin/dash
     app.request(path, { headers }, env)
 
 let failures = 0
-const check = async (name: string, expected: number, got: Promise<Response>) => {
+const check = async (name: string, expected: number, got: Response | Promise<Response>) => {
     const status = (await got).status
     try {
         assert.strictEqual(status, expected)
@@ -54,6 +60,58 @@ await check('prefix of real key', 401,
 
 await check('correct key in header', 200,
     call({ 'X-Admin-API-Key': REAL_KEY }, { ADMIN_API_KEY: REAL_KEY }))
+
+// ---------------------------------------------------------------------------
+// Payment verification. checkChargeStatus used to return status COMPLETED whenever it
+// could not reach Coinbase, when no API key was set, or for any id starting with
+// 'demo_charge_'. mint.ts mints when that status is COMPLETED, so a stub id or an
+// upstream outage handed out free NFTs. It must report COMPLETED only when Coinbase
+// actually said so, or when demo mode is explicitly switched on.
+
+const expectStatus = async (name: string, expected: string, got: Promise<{ status: string }>) => {
+    const status = (await got).status
+    try {
+        assert.strictEqual(status, expected)
+        console.log(`  ok   ${name} -> ${status}`)
+    } catch {
+        failures++
+        console.error(`  FAIL ${name} -> expected ${expected}, got ${status}`)
+    }
+}
+
+console.log('\ncheckChargeStatus (demo mode OFF):')
+await expectStatus('stub demo_charge_ id', 'UNVERIFIED',
+    checkChargeStatus('demo_charge_123_abc', 'a-real-looking-key', false))
+await expectStatus('stub fallback_charge_ id', 'UNVERIFIED',
+    checkChargeStatus('fallback_charge_123_abc', 'a-real-looking-key', false))
+await expectStatus('no API key configured', 'UNVERIFIED',
+    checkChargeStatus('real-charge-id', '', false))
+await expectStatus('API key is whitespace', 'UNVERIFIED',
+    checkChargeStatus('real-charge-id', '   ', false))
+// Unroutable host, so the fetch rejects: an unreachable processor must not mean "paid".
+await expectStatus('payment processor unreachable', 'UNVERIFIED',
+    checkChargeStatus('real-charge-id', 'key', false))
+
+console.log('\ncheckChargeStatus (demo mode ON, explicit opt-in):')
+await expectStatus('stub id is confirmed in demo mode', 'COMPLETED',
+    checkChargeStatus('demo_charge_123_abc', '', true))
+
+console.log('\npaymentsDemoMode:')
+const gate = (env: any, expected: boolean, name: string) => {
+    try {
+        assert.strictEqual(paymentsDemoMode(env), expected)
+        console.log(`  ok   ${name} -> ${expected}`)
+    } catch {
+        failures++
+        console.error(`  FAIL ${name} -> expected ${expected}`)
+    }
+}
+// Only the exact string "true" opts in; anything else, including a missing var, is off.
+gate({}, false, 'unset')
+gate({ PAYMENTS_DEMO_MODE: 'false' }, false, '"false"')
+gate({ PAYMENTS_DEMO_MODE: '1' }, false, '"1"')
+gate({ PAYMENTS_DEMO_MODE: 'TRUE' }, false, '"TRUE"')
+gate({ PAYMENTS_DEMO_MODE: 'true' }, true, '"true"')
 
 console.log(failures === 0 ? '\nall passed' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

@@ -1,10 +1,28 @@
 import { Context } from 'hono'
 import { adminAuth } from './admin'
 
+// c.req.formData() throws on a non-multipart body, which surfaced as a 500 on a caller
+// mistake. One guard here covers every upload handler.
+class BadUploadRequest extends Error {}
+
+const readFormData = async (c: Context<{ Bindings: CloudflareBindings }>): Promise<FormData> => {
+    const contentType = c.req.header('content-type') || ''
+    if (!/^(multipart\/form-data|application\/x-www-form-urlencoded)/i.test(contentType)) {
+        throw new BadUploadRequest(
+            `Expected multipart/form-data body, got "${contentType || 'no Content-Type'}"`
+        )
+    }
+    try {
+        return await c.req.formData()
+    } catch (e: any) {
+        throw new BadUploadRequest(`Malformed multipart body: ${e?.message || String(e)}`)
+    }
+}
+
 // Upload single image to R2
 export const uploadImageToR2 = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     try {
-        const formData = await c.req.formData()
+        const formData = await readFormData(c)
         const file = formData.get('image') as File
         
         if (!file) {
@@ -52,6 +70,7 @@ export const uploadImageToR2 = async (c: Context<{ Bindings: CloudflareBindings 
         })
     } catch (error: any) {
         console.error('Upload image error:', error)
+        if (error instanceof BadUploadRequest) return c.json({ error: error.message }, 400)
         return c.json({ error: error.message || 'Failed to upload image' }, 500)
     }
 }
@@ -59,7 +78,7 @@ export const uploadImageToR2 = async (c: Context<{ Bindings: CloudflareBindings 
 // Upload multiple files to R2 (for main file + cover file)
 export const uploadFilesToR2 = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     try {
-        const formData = await c.req.formData()
+        const formData = await readFormData(c)
         const mainFile = formData.get('mainFile') as File
         const coverFile = formData.get('coverFile') as File | null
         
@@ -141,6 +160,7 @@ export const uploadFilesToR2 = async (c: Context<{ Bindings: CloudflareBindings 
         })
     } catch (error: any) {
         console.error('Upload files error:', error)
+        if (error instanceof BadUploadRequest) return c.json({ error: error.message }, 400)
         return c.json({ error: error.message || 'Failed to upload files' }, 500)
     }
 }
@@ -251,7 +271,7 @@ export const serveMetadataFromR2 = async (c: Context<{ Bindings: CloudflareBindi
 // Upload audio file to R2 with integrity hash
 export const uploadAudioToR2 = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     try {
-        const formData = await c.req.formData()
+        const formData = await readFormData(c)
         const file = formData.get('audio') as File
         const title = formData.get('title') as string
         const artist = formData.get('artist') as string
@@ -324,6 +344,7 @@ export const uploadAudioToR2 = async (c: Context<{ Bindings: CloudflareBindings 
         })
     } catch (error: any) {
         console.error('Upload audio error:', error)
+        if (error instanceof BadUploadRequest) return c.json({ error: error.message }, 400)
         return c.json({ error: error.message || 'Failed to upload audio' }, 500)
     }
 }
