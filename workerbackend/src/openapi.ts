@@ -96,6 +96,9 @@ export const openAPISpec = {
         '/debug/db': {
             get: { tags: ['System'], summary: 'Row counts per table', responses: ok('Counts') },
         },
+        '/openapi.json': {
+            get: { tags: ['System'], summary: 'This specification', responses: ok('OpenAPI document') },
+        },
 
         '/api/nfts': {
             get: {
@@ -124,6 +127,25 @@ export const openAPISpec = {
                 responses: { ...ok('Asset detail'), '404': { description: 'Not found' } },
             },
         },
+        '/api/nfts/{assetId}/like': {
+            post: {
+                tags: ['Marketplace'],
+                summary: 'Toggle a like for this asset from a wallet',
+                parameters: [{ name: 'assetId', in: 'path', required: true, schema: { type: 'string' } }],
+                responses: { ...ok('Like toggled'), '404': { description: 'NFT not found' } },
+            },
+        },
+        '/api/nfts/{assetId}/liked': {
+            get: {
+                tags: ['Marketplace'],
+                summary: 'Whether a wallet already liked this asset',
+                parameters: [
+                    { name: 'assetId', in: 'path', required: true, schema: { type: 'string' } },
+                    { name: 'wallet', in: 'query', schema: { type: 'string' } },
+                ],
+                responses: ok('Like state'),
+            },
+        },
         '/api/listings': {
             get: {
                 tags: ['Marketplace'],
@@ -146,6 +168,13 @@ export const openAPISpec = {
                 summary: 'Marketplace totals and per-chain volume',
                 parameters: [{ name: 'days', in: 'query', schema: { type: 'integer', default: 30 } }],
                 responses: ok('Stats'),
+            },
+        },
+        '/api/settle': {
+            post: {
+                tags: ['Marketplace'],
+                summary: 'Record a purchase that already landed on chain',
+                responses: { ...ok('Settled'), '400': { description: 'Not confirmed, or ownership has not moved to the buyer yet' } },
             },
         },
 
@@ -201,6 +230,14 @@ export const openAPISpec = {
         '/api/solana/list': {
             post: { tags: ['Solana'], summary: 'List into the escrow program', responses: ok('Unsigned transaction') },
         },
+        '/api/solana/listing/sync': {
+            post: {
+                tags: ['Solana'],
+                summary: 'Sync a listing row from the escrow account after list or cancel',
+                description: 'The escrow account on chain is the source of truth, not the caller.',
+                responses: { ...ok('Synced'), '404': { description: 'NFT not found' } },
+            },
+        },
         '/api/solana/buy': {
             post: { tags: ['Solana'], summary: 'Buy from escrow', responses: ok('Unsigned transaction') },
         },
@@ -212,6 +249,25 @@ export const openAPISpec = {
         },
         '/api/solana/escrows': {
             get: { tags: ['Solana'], summary: 'Escrow accounts read from chain', responses: ok('Escrows') },
+        },
+        '/api/solana/burn': {
+            post: {
+                tags: ['Solana'],
+                summary: 'Build an unsigned burn transaction for an owned, unlisted asset',
+                responses: {
+                    ...ok('Unsigned transaction'),
+                    '403': { description: 'Not the recorded owner' },
+                    '409': { description: 'Listed or a medal; cancel or exclude first' },
+                },
+            },
+        },
+        '/api/solana/burn/confirm': {
+            post: {
+                tags: ['Solana'],
+                summary: 'Confirm a burn landed, then remove the row',
+                description: 'Fails closed: the signature is verified on chain before anything is deleted.',
+                responses: { ...ok('Removed'), '400': { description: 'Not verified' }, '404': { description: 'NFT not found' } },
+            },
         },
         '/api/solana/verify/{signature}': {
             get: {
@@ -251,6 +307,31 @@ export const openAPISpec = {
                 summary: 'One listing',
                 parameters: [{ name: 'listingId', in: 'path', required: true, schema: { type: 'string' } }],
                 responses: { ...ok('Listing'), '404': { description: 'Does not exist' } },
+            },
+        },
+        '/api/evm/index-token': {
+            post: {
+                tags: ['Ethereum'],
+                summary: 'Index a token minted on Base into the database',
+                description: 'The token id is read from the Minted event in the transaction receipt.',
+                responses: {
+                    ...ok('Indexed'),
+                    '400': { description: 'No mint found in that transaction' },
+                    '404': { description: 'Token does not exist on chain' },
+                },
+            },
+        },
+        '/api/evm/index-listing': {
+            post: {
+                tags: ['Ethereum'],
+                summary: 'Index a listing created on Base into the database',
+                description: 'The listing id is read from the Listed event, then price and seller from the contract.',
+                responses: {
+                    ...ok('Indexed'),
+                    '400': { description: 'No listing found in that transaction' },
+                    '404': { description: 'Listing does not exist on chain' },
+                    '409': { description: 'Listing is no longer active' },
+                },
             },
         },
         '/api/evm/verify/{txHash}': {
@@ -309,6 +390,13 @@ export const openAPISpec = {
         '/api/albums/{id}/tracks': {
             post: { tags: ['Music'], summary: 'Add a track', responses: ok('Created') },
         },
+        '/api/albums/{id}/tracks/{trackId}': {
+            put: { tags: ['Music'], summary: 'Update a track', responses: ok('Updated') },
+            delete: { tags: ['Music'], summary: 'Delete a track', responses: ok('Deleted') },
+        },
+        '/api/albums/{id}/tracks/{trackId}/metadata': {
+            get: { tags: ['Music'], summary: 'Metaplex-compatible metadata JSON for minting this track', responses: ok('Metadata') },
+        },
 
         '/api/upload/image': {
             post: {
@@ -318,11 +406,25 @@ export const openAPISpec = {
                 responses: { ...ok('Public URL'), '400': { description: 'Wrong content type or bad file' } },
             },
         },
+        '/api/upload/files': {
+            post: {
+                tags: ['Storage'],
+                summary: 'Upload a main file plus an optional cover image to R2',
+                description: 'multipart/form-data with mainFile and optional coverFile.',
+                responses: { ...ok('Public URLs'), '400': { description: 'Wrong content type or bad file' } },
+            },
+        },
         '/api/upload/metadata': {
             post: { tags: ['Storage'], summary: 'Upload metadata JSON to R2', responses: ok('Public URL') },
         },
         '/api/upload/audio': {
             post: { tags: ['Storage'], summary: 'Upload audio to R2', responses: ok('Public URL') },
+        },
+        '/cdn/images/{filename}': {
+            get: { tags: ['Storage'], summary: 'Serve an uploaded image from R2', responses: { ...ok('Image'), '404': { description: 'Not found' } } },
+        },
+        '/cdn/metadata/{filename}': {
+            get: { tags: ['Storage'], summary: 'Serve uploaded metadata JSON from R2', responses: { ...ok('Metadata'), '404': { description: 'Not found' } } },
         },
         '/cdn/audio/{filename}': {
             get: { tags: ['Storage'], summary: 'Stream audio, supports range requests', responses: ok('Audio') },
@@ -362,6 +464,69 @@ export const openAPISpec = {
                 responses: ok('Updated'),
             },
         },
+        '/api/admin/nfts/resolve-missing': {
+            post: {
+                tags: ['Admin'],
+                summary: 'Re-resolve every asset whose image never came through',
+                description: 'Capped per call; re-run until `remaining` reaches zero.',
+                security: adminSecured,
+                parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', default: 10, maximum: 25 } }],
+                responses: ok('Fixed and still-broken asset ids'),
+            },
+        },
+        '/api/admin/nfts/{assetId}/resolve': {
+            post: {
+                tags: ['Admin'],
+                summary: 'Re-resolve metadata for one asset',
+                security: adminSecured,
+                parameters: [{ name: 'assetId', in: 'path', required: true, schema: { type: 'string' } }],
+                responses: { ...ok('Updated'), '404': { description: 'NFT not found' } },
+            },
+        },
+        '/api/admin/evm/index': {
+            post: {
+                tags: ['Admin'],
+                summary: 'Backfill Base mints into the database by token id range',
+                description:
+                    'The worker never signs EVM transactions, so a mint leaves no row until this ' +
+                    'runs. Paged; re-run until `remaining` is 0.',
+                security: adminSecured,
+                parameters: [
+                    { name: 'from', in: 'query', schema: { type: 'integer', default: 1 } },
+                    { name: 'to', in: 'query', schema: { type: 'integer' } },
+                ],
+                responses: ok('Indexed and skipped token ids'),
+            },
+        },
+        '/api/admin/evm/index-listings': {
+            post: {
+                tags: ['Admin'],
+                summary: 'Mirror Base marketplace listings into the database',
+                description:
+                    'The chain is the source of truth; bounded per call by the Worker subrequest ' +
+                    'limit. Page with ?limit= until `remaining` is 0.',
+                security: adminSecured,
+                parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', default: 6, maximum: 10 } }],
+                responses: ok('Created, closed and skipped counts'),
+            },
+        },
+        '/api/admin/r2/{folder}/{filename}': {
+            put: {
+                tags: ['Admin'],
+                summary: "Replace an object's bytes in place",
+                description: 'The on-chain URI cannot change, but what it serves can.',
+                security: adminSecured,
+                parameters: [
+                    { name: 'folder', in: 'path', required: true, schema: { type: 'string', enum: ['images', 'metadata', 'audio'] } },
+                    { name: 'filename', in: 'path', required: true, schema: { type: 'string' } },
+                ],
+                responses: {
+                    ...ok('Replaced'),
+                    '400': { description: 'Bad folder or filename' },
+                    '404': { description: 'No existing object at that key' },
+                },
+            },
+        },
         '/api/admin/events': {
             post: {
                 tags: ['Admin'],
@@ -369,6 +534,15 @@ export const openAPISpec = {
                 description: 'Thresholds must satisfy GOLD >= SILVER >= BRONZE.',
                 security: adminSecured,
                 responses: { '201': { description: 'Created' }, '400': { description: 'Invalid tier config' } },
+            },
+        },
+        '/api/admin/events/{id}': {
+            delete: {
+                tags: ['Admin'],
+                summary: 'Delete an event',
+                description: 'Cascades to medals, participants and claims.',
+                security: adminSecured,
+                responses: { ...ok('Deleted'), '404': { description: 'Event not found' } },
             },
         },
         '/api/admin/events/{id}/points': {
@@ -392,6 +566,14 @@ export const openAPISpec = {
         },
         '/api/admin/events/{id}/claims': {
             get: { tags: ['Admin'], summary: 'Claims for an event', security: adminSecured, responses: ok('Claims') },
+        },
+        '/api/admin/escrow/resolve': {
+            post: {
+                tags: ['Admin'],
+                summary: 'Admin-resolve a stuck escrow, refunding the buyer or completing the sale',
+                security: adminSecured,
+                responses: ok('Unsigned transaction'),
+            },
         },
         '/api/admin/audit/{identifier}': {
             get: {
