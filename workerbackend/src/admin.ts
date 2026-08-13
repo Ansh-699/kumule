@@ -326,7 +326,13 @@ export const listBrokenNfts = async (c: Context<{ Bindings: CloudflareBindings }
 
     try {
         const { rows, total } = await withPrisma(connectionString, async (prisma) => {
-            const where: Prisma.NftWhereInput = { imageOk: false }
+            // Everything currently off the storefront, not just unresolvable images.
+            //
+            // Asking only for imageOk:false made hiding a one-way trip: an asset whose image
+            // came back was still hidden, and appeared nowhere in this dashboard, so there was
+            // no way to put it back on the shelf. Two listed assets with working images were
+            // stuck exactly like that.
+            const where: Prisma.NftWhereInput = { OR: [{ imageOk: false }, { hidden: true }] }
             const [rows, total] = await Promise.all([
                 prisma.nft.findMany({ where, orderBy: { mintedAt: 'desc' }, take: limit, skip: offset }),
                 prisma.nft.count({ where }),

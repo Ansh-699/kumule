@@ -136,7 +136,8 @@ export type Collection = {
     description: string | null
     imageUrl: string | null
     bannerUrl: string | null
-    category: Category
+    // Null for derived collections: a group spans every category its NFTs use.
+    category: Category | null
     verified: boolean
     itemCount: number
     floorPrice: string | null

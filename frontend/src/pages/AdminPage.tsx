@@ -366,13 +366,14 @@ const BrokenTab = ({ admin }: { admin: ReturnType<typeof adminApi> }) => {
     if (isLoading || !data) return <div className="h-64 animate-pulse rounded-2xl bg-white/[0.03]" />
 
     return (
-        <Panel title={`Assets with unresolved images (${data.total})`}>
+        <Panel title={`Assets not on the storefront (${data.total})`}>
             <p className="mb-4 text-xs text-white/45">
-                Hidden assets stay out of the marketplace but are never deleted — an asset exists on chain
-                regardless, and its metadata host may come back.
+                Anything hidden or without a resolvable image. Hidden assets are never deleted — the token
+                exists on chain regardless, and its metadata host may come back. Un-hide to put one back on
+                the shelf.
             </p>
             {data.data.length === 0 ? (
-                <p className="text-sm text-emerald-300">Every indexed asset has a resolvable image.</p>
+                <p className="text-sm text-emerald-300">Every indexed asset is visible and renders.</p>
             ) : (
                 <Table head={['Chain', 'Name', 'Metadata URI', 'Owner', 'Hidden', '']}>
                     {data.data.map((n) => (

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useInfiniteQuery, keepPreviousData } from '@tanstack/react-query'
-import { LayoutGrid, List, Search, AlertCircle, Wallet, Users, TrendingUp, Tag } from 'lucide-react'
+import { LayoutGrid, List, Search, AlertCircle, Wallet, Users, TrendingUp, Tag, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { api, type Chain, type SortKey } from '@/lib/api'
 import { CHAIN_UI, SORT_OPTIONS, formatCount, formatPrice } from '@/lib/chain-ui'
@@ -104,9 +105,21 @@ export const MarketplacePage = () => {
     const [searchInput, setSearchInput] = useState('')
     const [search, setSearch] = useState('')
 
+    // Every collection link points here as /?collection=<slug> - from the Collections page and
+    // from each NFT's detail page. Nothing read it, so all of them landed on an unfiltered grid
+    // that looked identical to the marketplace they came from.
+    const [searchParams, setSearchParams] = useSearchParams()
+    const collection = searchParams.get('collection') ?? undefined
+
     const query = useMemo(
-        () => ({ ...filtersToQuery(filters), sort, search: search || undefined, limit: PAGE_SIZE }),
-        [filters, sort, search]
+        () => ({
+            ...filtersToQuery(filters),
+            collection,
+            sort,
+            search: search || undefined,
+            limit: PAGE_SIZE,
+        }),
+        [filters, collection, sort, search]
     )
 
     const {
@@ -123,6 +136,14 @@ export const MarketplacePage = () => {
 
     const nfts = data?.pages.flatMap((p) => p.data) ?? []
     const total = data?.pages[0]?.total ?? 0
+
+    // Only to label the chip; the filtering itself is done by the slug alone.
+    const { data: collections } = useQuery({
+        queryKey: ['collections'],
+        queryFn: () => api.collections(),
+        enabled: Boolean(collection),
+    })
+    const collectionName = collections?.data.find((x) => x.slug === collection)?.name
 
     return (
         <div className="mx-auto max-w-[1600px] px-4 py-8 sm:px-6 lg:px-8">
@@ -151,6 +172,26 @@ export const MarketplacePage = () => {
                 />
 
                 <div className="min-w-0 flex-1">
+                    {collection && (
+                        <div className="mb-4 flex items-center gap-2">
+                            <span className="inline-flex items-center gap-2 rounded-xl bg-indigo-500/15 px-3 py-1.5 text-sm text-indigo-200 ring-1 ring-indigo-400/30">
+                                {collectionName ?? 'Collection'}
+                                <button
+                                    onClick={() => {
+                                        // Drop the param rather than the whole query string, so a
+                                        // chain or search filter alongside it survives.
+                                        searchParams.delete('collection')
+                                        setSearchParams(searchParams, { replace: true })
+                                    }}
+                                    aria-label="Clear collection filter"
+                                    className="text-indigo-300/70 transition-colors hover:text-white"
+                                >
+                                    <X className="h-3.5 w-3.5" />
+                                </button>
+                            </span>
+                        </div>
+                    )}
+
                     <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                         <ChainTabs
                             value={filters.chain}

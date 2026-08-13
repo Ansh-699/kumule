@@ -7,7 +7,25 @@
 import { Context } from 'hono'
 import { Prisma } from '@prisma/client'
 import { withPrisma, getConnectionString, ensureUser } from './db'
-import { Chain, parseChain, CHAIN_CONFIG, normalizeAddress, chainFromAddress } from './chains'
+import {
+    Chain, parseChain, CHAIN_CONFIG, normalizeAddress, chainFromAddress, toBaseUnits, fromBaseUnits,
+} from './chains'
+
+/**
+ * Collections are derived from the NFTs themselves, so they need a stable slug that can be
+ * turned back into a filter. EVM addresses fold to lowercase; Solana base58 is case-sensitive
+ * and must not.
+ */
+const derivedSlug = (chain: Chain, key: string) =>
+    chain === 'ETHEREUM' ? `eth-${key.toLowerCase()}` : `sol-${key}`
+
+const parseDerivedSlug = (slug: string): { chain: Chain; key: string } | null => {
+    const m = /^(eth|sol)-(.+)$/.exec(slug.trim())
+    if (!m) return null
+    return m[1] === 'eth'
+        ? { chain: 'ETHEREUM', key: m[2].toLowerCase() }
+        : { chain: 'SOLANA', key: m[2] }
+}
 
 const CATEGORIES = [
     'ART', 'PFP', 'GAMING', 'PHOTOGRAPHY', 'MUSIC', 'UTILITY', 'VIRTUAL_WORLDS', 'OTHER',
@@ -129,7 +147,16 @@ export const listNfts = async (c: Context<{ Bindings: CloudflareBindings }>) => 
         where.ownerAddress = ownerChain ? normalizeAddress(ownerChain, owner) : owner
     }
     if (collection) {
-        where.collection = /^[0-9a-f-]{36}$/i.test(collection) ? { id: collection } : { slug: collection }
+        // A derived slug names a contract or a creator, not a Collection row. Curated rows still
+        // resolve through the relation, so both kinds of link keep working.
+        const derived = parseDerivedSlug(collection)
+        if (derived) {
+            where.chain = derived.chain
+            if (derived.chain === 'ETHEREUM') where.contractAddress = derived.key
+            else where.creatorAddress = derived.key
+        } else {
+            where.collection = /^[0-9a-f-]{36}$/i.test(collection) ? { id: collection } : { slug: collection }
+        }
     }
     if (search) {
         where.OR = [
@@ -339,49 +366,109 @@ export const getStats = async (c: Context<{ Bindings: CloudflareBindings }>) => 
     }
 }
 
-/** GET /api/collections — the Featured Collections row. */
+/**
+ * GET /api/collections — the Featured Collections row.
+ *
+ * Derived from the NFTs rather than read from the Collection table. Nothing ever wrote that
+ * table - every NFT carries collectionId null - so this endpoint returned an empty list forever
+ * and the Collections page was a permanently dead link in the nav. Its denormalised itemCount,
+ * floorPrice and volume columns had nothing keeping them in step with reality either.
+ *
+ * Grouping is what a collection actually is: one ERC-721 contract, or one Solana creator. Every
+ * figure below is computed from live rows, so it cannot drift.
+ */
 export const listCollections = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     const connectionString = getConnectionString(c.env)
     if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
 
-    const { limit, offset } = parsePaging(c)
     const chain = parseChain(c.req.query('chain'))
     const category = parseCategory(c.req.query('category'))
-    const verifiedOnly = c.req.query('verified') === 'true'
 
-    const where: Prisma.CollectionWhereInput = {}
+    const where: Prisma.NftWhereInput = { hidden: false }
     if (chain) where.chain = chain
     if (category) where.category = category
-    if (verifiedOnly) where.verified = true
 
     try {
+        // ponytail: grouped in memory over every visible NFT. Fine at devnet volume; move the
+        // aggregation into SQL if this ever holds more than a few thousand rows.
         const rows = await withPrisma(connectionString, (prisma) =>
-            prisma.collection.findMany({
+            prisma.nft.findMany({
                 where,
-                orderBy: [{ verified: 'desc' }, { volume: 'desc' }],
-                take: limit,
-                skip: offset,
+                select: {
+                    chain: true,
+                    contractAddress: true,
+                    creatorAddress: true,
+                    imageUrl: true,
+                    listings: {
+                        where: { status: 'ACTIVE' },
+                        select: { price: true },
+                        orderBy: { price: 'asc' },
+                        take: 1,
+                    },
+                    sales: { select: { price: true } },
+                },
             })
         )
-        return c.json({
-            data: rows.map((r) => ({
-                id: r.id,
-                slug: r.slug,
-                chain: r.chain,
-                chainLabel: CHAIN_CONFIG[r.chain as Chain].label,
-                currency: CHAIN_CONFIG[r.chain as Chain].currency,
-                name: r.name,
-                description: r.description,
-                imageUrl: r.imageUrl,
-                bannerUrl: r.bannerUrl,
-                category: r.category,
-                verified: r.verified,
-                itemCount: r.itemCount,
-                floorPrice: r.floorPrice?.toString() ?? null,
-                volume: r.volume.toString(),
-            })),
-            count: rows.length,
-        })
+
+        type Group = {
+            chain: Chain
+            key: string
+            items: number
+            /** Smallest units, so floor and volume never pass through a float. */
+            floor: bigint | null
+            volume: bigint
+            imageUrl: string | null
+        }
+        const groups = new Map<string, Group>()
+
+        for (const n of rows) {
+            const chainKey = n.chain as Chain
+            // An EVM token belongs to its contract; a Solana asset to whoever minted it.
+            const key = chainKey === 'ETHEREUM' ? n.contractAddress : n.creatorAddress
+            if (!key) continue
+
+            const id = `${chainKey}:${key}`
+            const g =
+                groups.get(id) ??
+                { chain: chainKey, key, items: 0, floor: null, volume: 0n, imageUrl: null }
+
+            g.items += 1
+            if (!g.imageUrl && n.imageUrl) g.imageUrl = n.imageUrl
+
+            const listed = n.listings[0]
+            if (listed) {
+                const price = toBaseUnits(listed.price.toString(), chainKey)
+                if (g.floor === null || price < g.floor) g.floor = price
+            }
+            for (const s of n.sales) g.volume += toBaseUnits(s.price.toString(), chainKey)
+
+            groups.set(id, g)
+        }
+
+        const data = [...groups.values()]
+            .sort((a, b) => (b.volume === a.volume ? b.items - a.items : b.volume > a.volume ? 1 : -1))
+            .map((g) => ({
+                id: derivedSlug(g.chain, g.key),
+                slug: derivedSlug(g.chain, g.key),
+                chain: g.chain,
+                chainLabel: CHAIN_CONFIG[g.chain].label,
+                currency: CHAIN_CONFIG[g.chain].currency,
+                name: `Kumule on ${CHAIN_CONFIG[g.chain].label}`,
+                description:
+                    g.chain === 'ETHEREUM'
+                        ? 'Every Kumule token minted on the Base Sepolia contract.'
+                        : 'Every Kumule asset minted on Solana devnet by this creator.',
+                imageUrl: g.imageUrl,
+                bannerUrl: null,
+                category: null,
+                // Nothing here is curated, so nothing claims to be verified.
+                verified: false,
+                itemCount: g.items,
+                floorPrice: g.floor === null ? null : fromBaseUnits(g.floor, g.chain),
+                volume: fromBaseUnits(g.volume, g.chain),
+            }))
+
+        return c.json({ data, count: data.length })
     } catch (e: any) {
         console.error('listCollections failed:', e)
         return c.json({ error: 'Failed to list collections', details: e?.message }, 500)
