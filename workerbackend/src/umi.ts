@@ -7,7 +7,10 @@ export const getUmi = (rpcUrl: string) => {
     if (!rpcUrl) {
         throw new Error('RPC URL is required to create Umi instance');
     }
-    return createUmi(rpcUrl)
+    // 'confirmed', not the default 'finalized'. Reads here follow a transaction the caller has
+    // already watched confirm, and finalization trails that by roughly fifteen seconds - long
+    // enough that a just-purchased asset still reported its previous owner.
+    return createUmi(rpcUrl, 'confirmed')
         .use(mplCore())
 }
 

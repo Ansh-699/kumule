@@ -3,7 +3,8 @@ import { Prisma } from '@prisma/client'
 import { withPrisma, getConnectionString } from './db'
 import { Chain, CHAIN_CONFIG, parseChain } from './chains'
 import { resolveMetadata } from './metadata'
-import { evmContracts, totalMinted, readAsset, listAllListings as readEvmListings } from './evm'
+import { totalMinted, listAllListings as readEvmListings } from './evm'
+import { upsertEvmToken } from './settle'
 
 // Constant-time string compare so a wrong key leaks no timing signal.
 const timingSafeEqual = (a: string, b: string): boolean => {
@@ -383,6 +384,10 @@ export const resolveNftMetadata = async (c: Context<{ Bindings: CloudflareBindin
                     category: meta.category,
                     attributes: meta.attributes ?? undefined,
                     imageOk: meta.imageOk,
+                    // Hiding exists so a broken asset can come back, but nothing ever brought
+                    // one back: an NFT hidden while its metadata host was down stayed off the
+                    // shelf after the image resolved again, listing and all.
+                    ...(meta.imageOk ? { hidden: false } : {}),
                 },
             })
         )
@@ -441,6 +446,8 @@ export const resolveMissingMetadata = async (c: Context<{ Bindings: CloudflareBi
                         category: meta.category,
                         attributes: meta.attributes ?? undefined,
                         imageOk: meta.imageOk,
+                        // Back on the shelf once it renders again, for the same reason.
+                        ...(meta.imageOk ? { hidden: false } : {}),
                     },
                 })
             )
@@ -474,7 +481,6 @@ export const indexEvmTokens = async (c: Context<{ Bindings: CloudflareBindings }
     const connectionString = getConnectionString(c.env)
     if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
 
-    const contracts = evmContracts(c.env)
     const supply = await totalMinted(c.env)
     if (supply === 0n) return c.json({ success: true, indexed: [], skipped: [], supply: '0' })
 
@@ -491,57 +497,15 @@ export const indexEvmTokens = async (c: Context<{ Bindings: CloudflareBindings }
     const skipped: Array<{ tokenId: string; reason: string }> = []
 
     for (let id = from; id <= capped; id++) {
-        const asset = await readAsset(c.env, contracts.nft, id)
-        if (!asset) {
-            skipped.push({ tokenId: id.toString(), reason: 'token does not exist on chain' })
-            continue
-        }
-
-        const meta = await resolveMetadata(c.env, asset.tokenUri)
-
         try {
-            const row = await withPrisma(connectionString, (prisma) =>
-                prisma.nft.upsert({
-                    where: { assetId: asset.assetId },
-                    // Ownership and metadata are re-read from chain on every pass, so a transfer
-                    // or a fixed metadata host is picked up rather than frozen at first index.
-                    update: {
-                        ownerAddress: asset.ownerAddress,
-                        metadataUri: asset.tokenUri,
-                        ...(meta.name ? { name: meta.name } : {}),
-                        imageUrl: meta.imageUrl,
-                        animationUrl: meta.animationUrl,
-                        description: meta.description,
-                        category: meta.category,
-                        attributes: meta.attributes ?? undefined,
-                        imageOk: meta.imageOk,
-                    },
-                    create: {
-                        chain: 'ETHEREUM',
-                        chainId: asset.chainId,
-                        assetId: asset.assetId,
-                        contractAddress: asset.contractAddress,
-                        tokenId: asset.tokenId,
-                        // ERC-721 stores no per-token name, so it comes from the metadata.
-                        name: meta.name ?? `Token #${asset.tokenId}`,
-                        metadataUri: asset.tokenUri,
-                        imageUrl: meta.imageUrl,
-                        animationUrl: meta.animationUrl,
-                        description: meta.description,
-                        category: meta.category,
-                        attributes: meta.attributes ?? undefined,
-                        imageOk: meta.imageOk,
-                        ownerAddress: asset.ownerAddress,
-                        creatorAddress: asset.ownerAddress,
-                    },
-                })
-            )
-            indexed.push({
-                tokenId: asset.tokenId,
-                assetId: row.assetId,
-                name: row.name,
-                imageOk: row.imageOk,
-            })
+            // Same helper the public post-mint route uses, so a token indexed by either path
+            // lands with identical columns.
+            const row = await upsertEvmToken(c.env, connectionString, id)
+            if (!row) {
+                skipped.push({ tokenId: id.toString(), reason: 'token does not exist on chain' })
+                continue
+            }
+            indexed.push({ tokenId: id.toString(), ...row })
         } catch (e: any) {
             console.error(`evm index failed for token ${id}:`, e)
             skipped.push({ tokenId: id.toString(), reason: e?.message ?? 'upsert failed' })

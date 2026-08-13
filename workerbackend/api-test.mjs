@@ -364,6 +364,50 @@ if (ADMIN_KEY) {
     })
 }
 
+// ---------------------------------------------------------------- settlement
+//
+// The step that makes a landed purchase visible. Every one of these must fail closed: an
+// unverifiable transaction may never move an owner, close a listing or add to volume.
+
+await check('Settlement', 'settle rejects an empty body', '/api/settle', {
+    method: 'POST', body: {}, expect: [400],
+})
+await check('Settlement', 'settle requires a buyer, not just a hash', '/api/settle', {
+    method: 'POST', body: { assetId: SOL_ASSET, txHash: 'x'.repeat(88) }, expect: [400],
+    validate: (b) => /buyer/.test(b?.error ?? '') || 'expected the buyer to be required',
+})
+await check('Settlement', 'settle rejects an unparseable assetId', '/api/settle', {
+    method: 'POST', body: { assetId: 'nonsense', txHash: 'x', buyer: SOL_WALLET }, expect: [400],
+})
+await check('Settlement', 'settle refuses a transaction that never landed', '/api/settle', {
+    method: 'POST',
+    // Well-formed but fictional: verification has to reject it rather than trust the caller.
+    body: { assetId: SOL_ASSET, txHash: '5'.repeat(88), buyer: SOL_WALLET },
+    expect: [400],
+    validate: (b) => /did not confirm/i.test(b?.error ?? '') || 'expected a confirmation failure',
+})
+await check('Settlement', 'settle refuses a fictional EVM transaction', '/api/settle', {
+    method: 'POST',
+    body: { assetId: `0x${'a'.repeat(40)}:1`, txHash: `0x${'1'.repeat(64)}`, buyer: `0x${'b'.repeat(40)}` },
+    expect: [400],
+})
+await check('Settlement', 'listing sync rejects an empty body', '/api/solana/listing/sync', {
+    method: 'POST', body: {}, expect: [400],
+})
+await check('Settlement', 'listing sync refuses an unconfirmed signature', '/api/solana/listing/sync', {
+    method: 'POST', body: { assetId: SOL_ASSET, seller: SOL_WALLET, signature: '5'.repeat(88) },
+    expect: [400],
+})
+await check('Settlement', 'evm token index rejects a malformed hash', '/api/evm/index-token', {
+    method: 'POST', body: { txHash: '0xdeadbeef' }, expect: [400],
+})
+await check('Settlement', 'evm token index rejects a non-mint transaction', '/api/evm/index-token', {
+    method: 'POST', body: { txHash: `0x${'1'.repeat(64)}` }, expect: [400],
+})
+await check('Settlement', 'evm listing index rejects a malformed hash', '/api/evm/index-listing', {
+    method: 'POST', body: {}, expect: [400],
+})
+
 const failed = results.filter((r) => !r.ok)
 const groups = [...new Set(results.map((r) => r.group))]
 

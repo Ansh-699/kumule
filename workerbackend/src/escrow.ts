@@ -6,6 +6,7 @@ import { getUmi } from './umi'
 import { fetchAssetV1, getAssetV1GpaBuilder } from '@metaplex-foundation/mpl-core'
 import { withPrisma, getConnectionString, ensureUser } from './db'
 import { fromBaseUnits, toBaseUnits } from './chains'
+import { verifySolanaTransaction } from './solana'
 import { logBlockchainTransaction, logAudit } from './audit'
 
 // Lazy initialization to avoid module-level PublicKey creation issues
@@ -14,6 +15,16 @@ const getEscrowProgramId = () => new PublicKey('3ozh4TQJbeyXFUuXsj7fYmHB5aCVkg24
 
 // Buffer is set globally in index.ts
 const ESCROW_SEED = Buffer.from('escrow')
+
+/**
+ * A connection that reads at 'confirmed', never the web3.js default of 'finalized'.
+ *
+ * Every read in this file happens moments after a transaction the caller has already watched
+ * confirm, and finalization trails that by roughly fifteen seconds. At the default the account
+ * still looked untouched: a freshly created escrow read back as "no escrow account exists", and
+ * a completed purchase read back the previous owner.
+ */
+const rpcConnection = (url: string) => new Connection(url, 'confirmed')
 
 function getEscrowPDA(asset: PublicKey, seller: PublicKey): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
@@ -154,7 +165,7 @@ export const getListings = async (c: Context<{ Bindings: CloudflareBindings }>) 
     try {
         // Use public devnet RPC as fallback if API key is invalid
         let rpcUrl = c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'
-        const connection = new Connection(rpcUrl)
+        const connection = rpcConnection(rpcUrl)
 
 
         let accounts: any[] = []
@@ -170,7 +181,7 @@ export const getListings = async (c: Context<{ Bindings: CloudflareBindings }>) 
                 console.log('API key invalid, trying public devnet RPC for listings...')
                 try {
                     const publicRpcUrl = 'https://api.devnet.solana.com'
-                    const publicConnection = new Connection(publicRpcUrl)
+                    const publicConnection = rpcConnection(publicRpcUrl)
                     accounts = await publicConnection.getProgramAccounts(getEscrowProgramId()) as any[]
                     console.log(`Found ${accounts.length} program accounts using public RPC`)
                 } catch (fallbackError: any) {
@@ -264,7 +275,7 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         
         // Use public devnet RPC as fallback if API key is invalid
         let rpcUrl = c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'
-        let connection = new Connection(rpcUrl)
+        let connection = rpcConnection(rpcUrl)
 
         const tx = new Transaction()
 
@@ -276,7 +287,7 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             if (rpcError.message?.includes('401') || rpcError.message?.includes('Invalid API key') || rpcError.message?.includes('Unauthorized')) {
                 console.log('API key invalid in listNft, trying public devnet RPC...')
                 rpcUrl = 'https://api.devnet.solana.com'
-                connection = new Connection(rpcUrl)
+                connection = rpcConnection(rpcUrl)
                 escrowAccountInfo = await connection.getAccountInfo(escrowPDA)
             } else {
                 throw rpcError
@@ -359,7 +370,7 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                 errorMsg.includes('was not found')) {
                 console.log('UMI fetch failed, trying public RPC for asset fetch...', errorMsg.slice(0, 100))
                 rpcUrl = 'https://api.devnet.solana.com'
-                connection = new Connection(rpcUrl)
+                connection = rpcConnection(rpcUrl)
                 umi = getUmi(rpcUrl)
                 asset = await fetchAssetV1(umi, umiPublicKey(assetId))
             } else {
@@ -408,7 +419,7 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             if (rpcError.message?.includes('401') || rpcError.message?.includes('Invalid API key') || rpcError.message?.includes('Unauthorized')) {
                 console.log('API key invalid when getting blockhash in listNft, using public RPC...')
                 rpcUrl = 'https://api.devnet.solana.com'
-                connection = new Connection(rpcUrl)
+                connection = rpcConnection(rpcUrl)
                 const latestBlockhash = await connection.getLatestBlockhash()
                 blockhash = latestBlockhash.blockhash
                 lastValidBlockHeight = latestBlockhash.lastValidBlockHeight
@@ -425,53 +436,12 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         const serializedTx = tx.serialize({ requireAllSignatures: false, verifySignatures: false })
         const base64Tx = Buffer.from(serializedTx).toString('base64')
 
-        // Track seller in database and create escrow record
-        const connectionString = getConnectionString(c.env)
-        if (connectionString) {
-            try {
-                await withPrisma(connectionString, async (prisma) => {
-                    await ensureUser(prisma, 'SOLANA', seller)
-                    console.log('List DB: seller tracked', seller)
-
-                    const nft = await prisma.nft.findUnique({ where: { assetId } })
-
-                    if (nft) {
-                        // A Listing IS the escrow record now - the v1 Escrow table folded into
-                        // it, so there is one row describing "this asset is for sale at this
-                        // price" rather than two that could disagree.
-                        const existing = await prisma.listing.findFirst({
-                            where: { nftId: nft.id, sellerAddress: seller, status: 'ACTIVE' },
-                        })
-
-                        if (existing) {
-                            await prisma.listing.update({
-                                where: { id: existing.id },
-                                // String, not priceNum: the Decimal column is built from exact
-                                // digits so a price never round-trips through a float.
-                                data: { price: String(price), escrowPda: escrowPDA.toBase58() },
-                            })
-                            console.log('List DB: listing updated')
-                        } else {
-                            await prisma.listing.create({
-                                data: {
-                                    nftId: nft.id,
-                                    chain: 'SOLANA',
-                                    sellerAddress: seller,
-                                    price: String(price),
-                                    currency: 'SOL',
-                                    status: 'ACTIVE',
-                                    escrowPda: escrowPDA.toBase58(),
-                                },
-                            })
-                            console.log('List DB: listing created')
-                        }
-                    }
-                })
-            } catch (e) {
-                console.error('Failed to track seller/escrow in DB:', e)
-                // Don't block the transaction
-            }
-        }
+        // Deliberately no database write here. This handler only builds an unsigned transaction;
+        // the seller may still reject it in their wallet. Creating the ACTIVE listing at this
+        // point advertised assets that had never been deposited into escrow, so every buyer's
+        // transaction failed against an escrow that did not exist. The row is written by
+        // confirmListing once the deposit is on chain - the same build-then-confirm split the
+        // burn flow uses.
 
         // Log successful listing transaction
         logBlockchainTransaction({
@@ -495,6 +465,132 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         })
         
         return c.text(`List NFT failed: ${error}`, 500)
+    }
+}
+
+/**
+ * POST /api/solana/listing/sync   { assetId, seller, signature }
+ *
+ * Makes the listing row match the escrow account, whichever way it went.
+ *
+ * One endpoint rather than a confirm for listing and another for cancelling, because both
+ * questions have the same answer: is this asset sitting in escrow right now? Listing and
+ * cancelling used to write the database while building the unsigned transaction, so rejecting
+ * the wallet prompt either advertised an NFT that was never escrowed - every buyer's
+ * transaction then failed against an escrow that did not exist - or hid one that still was.
+ *
+ * The price is read back out of the escrow rather than taken from the request: the escrow is
+ * what a buyer actually pays against, so a client cannot advertise 1 SOL for an asset
+ * escrowed at 40.
+ */
+export const syncListing = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    const connectionString = getConnectionString(c.env)
+    if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
+
+    let body: any
+    try {
+        body = await c.req.json()
+    } catch {
+        return c.json({ error: 'Invalid JSON body' }, 400)
+    }
+
+    const { assetId, seller, signature } = body ?? {}
+    if (!assetId || !seller || !signature) {
+        return c.json({ error: 'assetId, seller and signature are required' }, 400)
+    }
+
+    // Fails closed on an unreachable RPC or a reverted transaction.
+    if (!(await verifySolanaTransaction(c.env, signature))) {
+        return c.json({ error: 'Transaction did not confirm successfully', signature }, 400)
+    }
+
+    let assetPubkey: PublicKey
+    let sellerPubkey: PublicKey
+    try {
+        assetPubkey = new PublicKey(assetId)
+        sellerPubkey = new PublicKey(seller)
+    } catch {
+        return c.json({ error: 'assetId or seller is not a valid address' }, 400)
+    }
+
+    const [escrowPDA] = getEscrowPDA(assetPubkey, sellerPubkey)
+    const connection = rpcConnection(c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com')
+
+    const info = await connection.getAccountInfo(escrowPDA)
+
+    // 1 = Deposited. Anything else - no account, a closed one, a cancelled one - means the asset
+    // is not held for sale, whatever the caller believes.
+    let escrow: EscrowAccount | null = null
+    if (info) {
+        try {
+            escrow = parseEscrowAccount(info.data)
+        } catch {
+            escrow = null
+        }
+    }
+    const escrowed = escrow?.status === 1
+    const price = escrowed ? fromBaseUnits(escrow!.price, 'SOLANA') : null
+
+    try {
+        const outcome = await withPrisma(connectionString, async (prisma) => {
+            await ensureUser(prisma, 'SOLANA', seller)
+            const nft = await prisma.nft.findUnique({ where: { assetId }, select: { id: true } })
+            if (!nft) return null
+
+            // Only an owner can deposit into escrow, and only a seller gets one back, so either
+            // way this address holds the asset. While it is escrowed the on-chain owner is the
+            // program's PDA, so the marketplace keeps showing the person - and this repairs any
+            // row that recorded a PDA as the owner.
+            await prisma.nft.update({ where: { id: nft.id }, data: { ownerAddress: seller } })
+
+            const existing = await prisma.listing.findFirst({
+                where: { nftId: nft.id, sellerAddress: seller, status: 'ACTIVE' },
+            })
+
+            if (!escrowed) {
+                if (existing) {
+                    await prisma.listing.update({
+                        where: { id: existing.id },
+                        data: { status: 'CANCELLED', closeTxHash: signature },
+                    })
+                }
+                return { state: 'CANCELLED' as const }
+            }
+
+            if (existing) {
+                await prisma.listing.update({
+                    where: { id: existing.id },
+                    data: { price: price!, escrowPda: escrowPDA.toBase58(), listTxHash: signature },
+                })
+            } else {
+                await prisma.listing.create({
+                    data: {
+                        nftId: nft.id,
+                        chain: 'SOLANA',
+                        sellerAddress: seller,
+                        price: price!,
+                        currency: 'SOL',
+                        status: 'ACTIVE',
+                        escrowPda: escrowPDA.toBase58(),
+                        listTxHash: signature,
+                    },
+                })
+            }
+            return { state: 'ACTIVE' as const }
+        })
+
+        if (!outcome) return c.json({ error: 'NFT not found' }, 404)
+        return c.json({
+            success: true,
+            assetId,
+            state: outcome.state,
+            price,
+            currency: 'SOL',
+            escrowPda: escrowPDA.toBase58(),
+        })
+    } catch (e: any) {
+        console.error('syncListing failed:', e)
+        return c.json({ error: 'Failed to sync listing', details: e?.message }, 500)
     }
 }
 
@@ -566,7 +662,7 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             data: Buffer.from(getIDL().instructions[2].discriminator),
         })
 
-        const connection = new Connection(rpcUrl)
+        const connection = rpcConnection(rpcUrl)
         const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
 
         const tx = new Transaction()
@@ -589,7 +685,7 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
 
                     // Every other call site defaults to public devnet; this one threw on an
                     // unset secret because new Connection(undefined) rejects the endpoint.
-                    const connection = new Connection(c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com')
+                    const connection = rpcConnection(c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com')
                     const escrowAccountInfo = await connection.getAccountInfo(escrowPDA)
                     // Decimal string throughout. The escrow price is a u64 of lamports, so it
                     // converts exactly rather than via Number()/1e9.
@@ -721,7 +817,7 @@ export const cancelListing = async (c: Context<{ Bindings: CloudflareBindings }>
             data: Buffer.from(getIDL().instructions[3].discriminator),
         })
 
-        const connection = new Connection(rpcUrl)
+        const connection = rpcConnection(rpcUrl)
         const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
 
         const tx = new Transaction()
@@ -733,33 +829,9 @@ export const cancelListing = async (c: Context<{ Bindings: CloudflareBindings }>
         const serializedTx = tx.serialize({ requireAllSignatures: false, verifySignatures: false })
         const base64Tx = Buffer.from(serializedTx).toString('base64')
 
-        // Update escrow status in database
-        const connectionString = getConnectionString(c.env)
-        if (connectionString) {
-            try {
-                await withPrisma(connectionString, async (prisma) => {
-                    const nft = await prisma.nft.findUnique({ where: { assetId } })
-
-                    if (nft) {
-                        await ensureUser(prisma, 'SOLANA', seller)
-                        const listing = await prisma.listing.findFirst({
-                            where: { nftId: nft.id, sellerAddress: seller, status: 'ACTIVE' },
-                        })
-
-                        if (listing) {
-                            await prisma.listing.update({
-                                where: { id: listing.id },
-                                data: { status: 'CANCELLED' },
-                            })
-                            console.log('Cancel DB: listing CANCELLED')
-                        }
-                    }
-                })
-            } catch (e) {
-                console.error('Failed to update escrow status:', e)
-                // Don't block the transaction
-            }
-        }
+        // No database write here either. This only builds an unsigned transaction, and marking
+        // the listing CANCELLED at this point hid an asset that was still sitting in escrow if
+        // the seller dismissed their wallet. syncListing records the outcome once it is on chain.
 
         // Log successful cancel transaction
         logBlockchainTransaction({
@@ -868,7 +940,7 @@ export const adminResolveEscrow = async (c: Context<{ Bindings: CloudflareBindin
             data: instructionData,
         })
 
-        const connection = new Connection(rpcUrl)
+        const connection = rpcConnection(rpcUrl)
         const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
 
         const tx = new Transaction()

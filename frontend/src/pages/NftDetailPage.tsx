@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useWallet } from '@solana/wallet-adapter-react'
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from 'wagmi'
 import { parseUnits } from 'viem'
 import {
     ArrowLeft, ExternalLink, BadgeCheck, ImageOff, Loader2, CheckCircle2, AlertCircle, Tag,
@@ -84,6 +84,7 @@ export const NftDetailPage = () => {
     const solana = useWallet()
     const evm = useAccount()
     const { writeContractAsync } = useWriteContract()
+    const publicClient = usePublicClient()
 
     const { data: nft, isLoading, isError, error } = useQuery({
         queryKey: ['nft', assetId],
@@ -97,8 +98,57 @@ export const NftDetailPage = () => {
         enabled: nft?.chain === 'ETHEREUM',
     })
 
-    const [pendingHash, setPendingHash] = useState<`0x${string}` | undefined>()
-    const receipt = useWaitForTransactionReceipt({ hash: pendingHash })
+    // What still has to happen once an EVM transaction is mined. The kind travels with the hash
+    // because a buy has to settle the sale afterwards and a listing has to be indexed, and the
+    // receipt hook on its own cannot tell the two apart.
+    const [pending, setPending] = useState<{ hash: `0x${string}`; kind: 'buy' | 'list' } | null>(null)
+    const receipt = useWaitForTransactionReceipt({ hash: pending?.hash })
+
+    // An effect, not a branch in the render body. This used to call setState and invalidate
+    // queries while rendering, which is a side effect in the middle of a render pass.
+    useEffect(() => {
+        if (!pending || !nft) return
+
+        if (receipt.isError) {
+            setPending(null)
+            setTx({ kind: 'error', message: 'The transaction reverted on chain' })
+            return
+        }
+        if (!receipt.isSuccess) return
+
+        const { hash, kind } = pending
+        setPending(null)
+        const explorerUrl = CHAIN_UI[nft.chain].explorerTx(hash)
+
+        void (async () => {
+            try {
+                if (kind === 'buy') {
+                    if (!evm.address) throw new Error('Wallet disconnected')
+                    setTx({ kind: 'confirming', message: 'Recording the sale…', hash })
+                    await api.settle({ assetId: nft.assetId, txHash: hash, buyer: evm.address })
+                    setTx({ kind: 'success', message: 'Purchased. The NFT is now in your wallet.', explorerUrl })
+                } else {
+                    setTx({ kind: 'confirming', message: 'Publishing the listing…', hash })
+                    await api.evmIndexListing(hash)
+                    setTx({ kind: 'success', message: 'Listed for sale.', explorerUrl })
+                }
+            } catch {
+                // The chain transaction succeeded regardless; only our copy of it is behind.
+                // Reporting a failure here would tell someone their purchase did not go through
+                // when it did.
+                setTx({
+                    kind: 'success',
+                    message:
+                        kind === 'buy'
+                            ? 'Purchased on chain. The marketplace may take a moment to catch up.'
+                            : 'Listed on chain. The marketplace may take a moment to catch up.',
+                    explorerUrl,
+                })
+            }
+            queryClient.invalidateQueries({ queryKey: ['nft', nft.assetId] })
+            queryClient.invalidateQueries({ queryKey: ['nfts'] })
+        })()
+    }, [pending, receipt.isSuccess, receipt.isError, nft, evm.address, queryClient])
 
     if (isLoading) {
         return (
@@ -159,7 +209,7 @@ export const NftDetailPage = () => {
                 // display string, and never through a float. The contract requires an exact match.
                 value: BigInt(match.priceWei),
             })
-            setPendingHash(hash)
+            setPending({ hash, kind: 'buy' })
             setTx({ kind: 'confirming', message: 'Waiting for confirmation…', hash })
         } catch (e: any) {
             // Surfaced, never swallowed. A wallet rejection is a normal outcome and reads as
@@ -188,9 +238,19 @@ export const NftDetailPage = () => {
             const verified = await api.solanaVerify(signature).catch(() => ({ verified: false }))
             if (!verified.verified) throw new Error('Transaction did not confirm successfully')
 
+            // Closes the listing, moves the owner and writes the sale. Without this step the
+            // purchase succeeded on chain while the marketplace went on showing the NFT for
+            // sale under the seller's name, with volume stuck at zero.
+            const synced = await api
+                .settle({ assetId: nft.assetId, txHash: signature, buyer: solana.publicKey.toBase58() })
+                .then(() => true)
+                .catch(() => false)
+
             setTx({
                 kind: 'success',
-                message: 'Purchased. The NFT is now in your wallet.',
+                message: synced
+                    ? 'Purchased. The NFT is now in your wallet.'
+                    : 'Purchased on chain. The marketplace may take a moment to catch up.',
                 explorerUrl: ui.explorerTx(signature),
             })
             refresh()
@@ -202,19 +262,34 @@ export const NftDetailPage = () => {
     // ---------------------------------------------------------------- list
 
     const listEvm = async () => {
-        if (!contracts || !evm.address) return
+        if (!contracts || !evm.address || !publicClient) return
         try {
             const priceWei = parseUnits(listPrice, 18)
             if (priceWei <= 0n) throw new Error('Enter a price above zero')
 
-            setTx({ kind: 'signing', message: 'Approve the marketplace to move this NFT…' })
-            const approveHash = await writeContractAsync({
+            setTx({ kind: 'preparing', message: 'Checking the marketplace approval…' })
+            // list() reverts with MarketNotApproved unless this already reads true, and
+            // writeContractAsync resolves when a transaction is *submitted*, not when it is
+            // mined. Firing both signatures back to back therefore listed against an approval
+            // that had not landed yet, so the listing reverted essentially every time.
+            const approved = await publicClient.readContract({
                 address: contracts.nft as `0x${string}`,
                 abi: NFT_ABI,
-                functionName: 'setApprovalForAll',
-                args: [contracts.market as `0x${string}`, true],
+                functionName: 'isApprovedForAll',
+                args: [evm.address, contracts.market as `0x${string}`],
             })
-            setTx({ kind: 'confirming', message: 'Waiting for the approval…', hash: approveHash })
+
+            if (!approved) {
+                setTx({ kind: 'signing', message: 'Approve the marketplace to move this NFT…' })
+                const approveHash = await writeContractAsync({
+                    address: contracts.nft as `0x${string}`,
+                    abi: NFT_ABI,
+                    functionName: 'setApprovalForAll',
+                    args: [contracts.market as `0x${string}`, true],
+                })
+                setTx({ kind: 'confirming', message: 'Waiting for the approval to be mined…', hash: approveHash })
+                await publicClient.waitForTransactionReceipt({ hash: approveHash })
+            }
 
             setTx({ kind: 'signing', message: 'Now confirm the listing…' })
             const hash = await writeContractAsync({
@@ -223,7 +298,7 @@ export const NftDetailPage = () => {
                 functionName: 'list',
                 args: [contracts.nft as `0x${string}`, BigInt(nft.tokenId!), priceWei],
             })
-            setPendingHash(hash)
+            setPending({ hash, kind: 'list' })
             setTx({ kind: 'confirming', message: 'Waiting for confirmation…', hash })
         } catch (e: any) {
             setTx({ kind: 'error', message: describeError(e) })
@@ -244,7 +319,57 @@ export const NftDetailPage = () => {
             setTx({ kind: 'signing', message: 'Approve the listing in your wallet…' })
             const { signature } = await signAndSend(solana, transaction)
 
-            setTx({ kind: 'success', message: 'Listed for sale.', explorerUrl: ui.explorerTx(signature) })
+            // The listing row is written here rather than when the transaction was built, so
+            // rejecting the signature no longer leaves the marketplace advertising an NFT that
+            // was never escrowed. The backend reads the price back out of the escrow account.
+            setTx({ kind: 'confirming', message: 'Publishing the listing…' })
+            const synced = await api
+                .solanaListingSync({ assetId: nft.assetId, seller: solana.publicKey.toBase58(), signature })
+                .then(() => true)
+                .catch(() => false)
+
+            setTx({
+                kind: 'success',
+                message: synced
+                    ? 'Listed for sale.'
+                    : 'Escrowed on chain. The listing will appear once the marketplace catches up.',
+                explorerUrl: ui.explorerTx(signature),
+            })
+            refresh()
+        } catch (e: any) {
+            setTx({ kind: 'error', message: describeError(e) })
+        }
+    }
+
+    // ---------------------------------------------------------------- cancel
+
+    /**
+     * Take a listing down. There was no way to do this from the UI at all: an owner looking at
+     * their own listing saw "This is your listing." and nothing else, so anything listed stayed
+     * listed forever.
+     */
+    const cancelSolana = async () => {
+        if (!solana.publicKey || !solana.signTransaction) return
+        try {
+            setTx({ kind: 'preparing', message: 'Building the cancel transaction…' })
+            const { transaction } = await api.solanaCancel({
+                assetId: nft.assetId,
+                seller: solana.publicKey.toBase58(),
+            })
+
+            setTx({ kind: 'signing', message: 'Confirm in your wallet to take this off sale…' })
+            const { signature } = await signAndSend(solana, transaction)
+
+            setTx({ kind: 'confirming', message: 'Updating the marketplace…' })
+            await api
+                .solanaListingSync({ assetId: nft.assetId, seller: solana.publicKey.toBase58(), signature })
+                .catch(() => null)
+
+            setTx({
+                kind: 'success',
+                message: 'Listing cancelled. The NFT is back in your wallet.',
+                explorerUrl: ui.explorerTx(signature),
+            })
             refresh()
         } catch (e: any) {
             setTx({ kind: 'error', message: describeError(e) })
@@ -279,21 +404,6 @@ export const NftDetailPage = () => {
             setTx({ kind: 'error', message: describeError(e) })
             setConfirmBurn(false)
         }
-    }
-
-    // Once an EVM receipt lands, report from its actual status rather than assuming success.
-    if (pendingHash && receipt.isSuccess && tx.kind === 'confirming') {
-        setPendingHash(undefined)
-        setTx({
-            kind: 'success',
-            message: 'Confirmed on Base Sepolia.',
-            explorerUrl: ui.explorerTx(pendingHash),
-        })
-        refresh()
-    }
-    if (pendingHash && receipt.isError && tx.kind === 'confirming') {
-        setPendingHash(undefined)
-        setTx({ kind: 'error', message: 'The transaction reverted on chain' })
     }
 
     const walletConnected = Boolean(connectedAddress)
@@ -359,9 +469,20 @@ export const NftDetailPage = () => {
                                         <ConnectForChain chain={nft.chain} action="buy this NFT" />
                                     </div>
                                 ) : isOwner ? (
-                                    <p className="mt-4 rounded-xl bg-white/[0.03] p-3 text-sm text-white/50">
-                                        This is your listing.
-                                    </p>
+                                    <div className="mt-4">
+                                        <p className="rounded-xl bg-white/[0.03] p-3 text-sm text-white/50">
+                                            This is your listing.
+                                        </p>
+                                        {nft.chain === 'SOLANA' && (
+                                            <button
+                                                onClick={cancelSolana}
+                                                disabled={busy}
+                                                className="mt-2 w-full rounded-xl border border-white/10 py-2.5 text-sm font-medium text-white/80 transition-colors hover:bg-white/5 disabled:opacity-60"
+                                            >
+                                                {busy ? 'Working…' : 'Cancel listing'}
+                                            </button>
+                                        )}
+                                    </div>
                                 ) : (
                                     <button
                                         onClick={nft.chain === 'ETHEREUM' ? buyEvm : buySolana}

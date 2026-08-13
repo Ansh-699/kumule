@@ -19,12 +19,15 @@ import { searchNftByAsset } from './searchnftbyasset'
 import { searchNftByOwner } from './searchnftbyowner'
 import { mintNft } from './mint'
 import { transferNft } from './transfer'
-import { listNft, buyNft, cancelListing, getListings, adminResolveEscrow } from './escrow'
+import { listNft, syncListing, buyNft, cancelListing, getListings, adminResolveEscrow } from './escrow'
 import { burnNft, confirmBurn } from './burn'
 
 // evm marketplace (read-only from the worker; writes are wallet-signed in the browser)
 import { evmContracts, totalMinted, readAsset, readListing, listAllListings as evmListings, verifyEvmTransaction } from './evm'
 import { verifySolanaTransaction } from './solana'
+
+// post-transaction reconciliation: what makes a landed purchase or mint visible
+import { settle, indexEvmToken, indexEvmListing } from './settle'
 
 // events and medals
 import {
@@ -128,6 +131,10 @@ app.get('/api/listings', listListings)
 app.get('/api/collections', listCollections)
 app.get('/api/stats', getStats)
 
+// Records a purchase that already landed. Without this a completed buy left the NFT on sale,
+// still owned by the seller, and platform volume stuck at zero on both chains.
+app.post('/api/settle', settle)
+
 // ---------------------------------------------------------------- solana chain ops
 
 app.get('/api/solana/asset', searchNftByAsset)
@@ -135,6 +142,10 @@ app.get('/api/solana/owner', searchNftByOwner)
 app.post('/api/solana/mint', mintNft)
 app.post('/api/solana/transfer', transferNft)
 app.post('/api/solana/list', listNft)
+// Build, then sync. Listing rows are written only from what the escrow account actually says,
+// so dismissing a wallet prompt no longer advertises an NFT nobody can buy - or hides one that
+// is still for sale. Covers both listing and cancelling.
+app.post('/api/solana/listing/sync', syncListing)
 app.post('/api/solana/buy', buyNft)
 app.post('/api/solana/cancel', cancelListing)
 app.get('/api/solana/escrows', getListings)
@@ -178,6 +189,11 @@ app.get('/api/evm/listings/:listingId', async (c) => {
     const listing = await readListing(c.env, BigInt(raw))
     return listing ? c.json(listing) : c.json({ error: 'Listing does not exist' }, 404)
 })
+
+// The worker never signs on Base, so a mint left no row and the token was invisible to the
+// marketplace. The token id is read out of the mint receipt, so this grants the caller nothing.
+app.post('/api/evm/index-token', indexEvmToken)
+app.post('/api/evm/index-listing', indexEvmListing)
 
 app.get('/api/evm/verify/:txHash', async (c) => {
     const ok = await verifyEvmTransaction(c.env, c.req.param('txHash'))

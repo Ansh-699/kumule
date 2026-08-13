@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
-import { useAccount, useWriteContract } from 'wagmi'
+import { useAccount, useWriteContract, usePublicClient } from 'wagmi'
 import { useQuery } from '@tanstack/react-query'
 import { Upload, Loader2, CheckCircle2, AlertCircle, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -38,6 +38,7 @@ export const CreatePage = () => {
     const solana = useWallet()
     const evm = useAccount()
     const { writeContractAsync } = useWriteContract()
+    const publicClient = usePublicClient()
     const { data: contracts } = useQuery({
         queryKey: ['evm-contracts'],
         queryFn: () => api.evmContracts(),
@@ -68,6 +69,8 @@ export const CreatePage = () => {
 
             if (chain === 'ETHEREUM') {
                 if (!contracts) throw new Error('Contract addresses unavailable')
+                if (!publicClient) throw new Error('No Base Sepolia connection')
+
                 setState({ kind: 'busy', step: 'Confirm the mint in your wallet…' })
                 const hash = await writeContractAsync({
                     address: contracts.nft as `0x${string}`,
@@ -75,7 +78,20 @@ export const CreatePage = () => {
                     functionName: 'mint',
                     args: [evm.address!, metadataUri],
                 })
-                setState({ kind: 'done', assetId: metadataUri, explorerUrl: ui.explorerTx(hash) })
+
+                // writeContractAsync resolves on submission, so this used to report "Minted"
+                // for a transaction that had not been mined and could still revert.
+                setState({ kind: 'busy', step: 'Waiting for confirmation on Base Sepolia…' })
+                const receipt = await publicClient.waitForTransactionReceipt({ hash })
+                if (receipt.status !== 'success') throw new Error('The mint reverted on chain')
+
+                // Nothing on the backend signs EVM transactions, so without this the token
+                // existed on chain and never appeared anywhere on the site. The token id comes
+                // out of this receipt, so the right one is indexed even under a lagging node.
+                setState({ kind: 'busy', step: 'Publishing to the marketplace…' })
+                const indexed = await api.evmIndexToken(hash)
+
+                setState({ kind: 'done', assetId: indexed.assetId, explorerUrl: ui.explorerTx(hash) })
                 return
             }
 

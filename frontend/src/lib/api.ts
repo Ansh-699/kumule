@@ -303,6 +303,18 @@ export const api = {
             body: JSON.stringify(body),
         }),
 
+    /**
+     * Make the listing row match the escrow account, after listing or after cancelling.
+     *
+     * The build steps write nothing, so a dismissed wallet prompt leaves no trace. The price is
+     * read back off the escrow rather than sent from here.
+     */
+    solanaListingSync: (body: { assetId: string; seller: string; signature: string }) =>
+        request<{ success: boolean; state: 'ACTIVE' | 'CANCELLED'; price: string | null; escrowPda: string }>(
+            '/api/solana/listing/sync',
+            { method: 'POST', body: JSON.stringify(body) }
+        ),
+
     solanaBuy: (body: { assetId: string; buyer: string; seller: string }) =>
         request<{ transaction: string }>('/api/solana/buy', {
             method: 'POST',
@@ -330,6 +342,23 @@ export const api = {
     solanaVerify: (signature: string) =>
         request<{ verified: boolean }>(`/api/solana/verify/${signature}`),
 
+    /**
+     * Record a purchase that already landed on chain, for either chain.
+     *
+     * The buy itself is what moves the asset; this is what makes the marketplace agree - the
+     * listing closes, the owner moves, and the sale shows up in history and volume. Safe to
+     * retry: the backend keys the sale on the transaction hash.
+     */
+    settle: (body: { assetId: string; txHash: string; buyer: string }) =>
+        request<{
+            success: boolean
+            settled: boolean
+            ownerAddress: string
+            ownerChanged: boolean
+            price?: string
+            currency?: string
+        }>('/api/settle', { method: 'POST', body: JSON.stringify(body) }),
+
     // ---------------------------------------------------------------- evm
 
     evmContracts: () =>
@@ -351,6 +380,26 @@ export const api = {
         }>(`/api/evm/listings${qs(p)}`),
 
     evmVerify: (txHash: string) => request<{ verified: boolean }>(`/api/evm/verify/${txHash}`),
+
+    /**
+     * Make a Base mint visible in the marketplace.
+     *
+     * Nothing on the backend signs EVM transactions, so a mint that succeeded in the browser
+     * left no row and the token existed on chain but nowhere on the site. The token id is read
+     * from this transaction's own receipt.
+     */
+    evmIndexToken: (txHash: string) =>
+        request<{ success: boolean; tokenId: string; assetId: string; name: string; imageOk: boolean }>(
+            '/api/evm/index-token',
+            { method: 'POST', body: JSON.stringify({ txHash }) }
+        ),
+
+    /** Mirror a Base listing into the marketplace as soon as it is created. */
+    evmIndexListing: (txHash: string) =>
+        request<{ success: boolean; listingId: string; assetId: string; price: string }>(
+            '/api/evm/index-listing',
+            { method: 'POST', body: JSON.stringify({ txHash }) }
+        ),
 
     // ---------------------------------------------------------------- events
 

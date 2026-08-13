@@ -200,6 +200,34 @@ export const verifyEvmTransaction = async (
 }
 
 /**
+ * Pull the listing id out of a `list()` receipt. The mirror of tokenIdFromMintReceipt, and
+ * unsafe for the same reason to derive from `totalListings` instead: a lagging node hands back
+ * a stale count and names somebody else's listing.
+ */
+export const listingIdFromReceipt = async (
+    env: CloudflareBindings,
+    txHash: string
+): Promise<string | null> => {
+    try {
+        const client = evmClient(env)
+        const receipt = await client.getTransactionReceipt({ hash: txHash as `0x${string}` })
+        if (receipt.status !== 'success') return null
+
+        const logs = await client.getContractEvents({
+            abi: MARKET_ABI,
+            eventName: 'Listed',
+            blockHash: receipt.blockHash,
+        })
+        const mine = logs.find((l) => l.transactionHash?.toLowerCase() === txHash.toLowerCase())
+        const listingId = (mine?.args as { listingId?: bigint } | undefined)?.listingId
+        return listingId === undefined ? null : listingId.toString()
+    } catch (e) {
+        console.error('evm listingIdFromReceipt failed:', e)
+        return null
+    }
+}
+
+/**
  * Pull the token id out of a mint receipt. Reading `totalMinted` after the fact is unsafe:
  * a lagging node returns a stale count, and feeding that forward targets the wrong token -
  * exactly the failure the first live Base Sepolia run hit.
