@@ -29,3 +29,7 @@ yarn-error.log*
 # it remains in history, so treat that key as burned and never fund it.
 .keypairs/
 *.keypair.json
+
+# architect run artifacts (local only)
+docs/runs/
+docs/jobs/
