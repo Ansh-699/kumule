@@ -9,7 +9,7 @@ export const useUmi = () => {
     const wallet = useWallet();
 
     const umi = useMemo(() => {
-        const rpcUrl = import.meta.env.VITE_SOLANA_RPC_URL || 'https://devnet.helius-rpc.com/?api-key=0d4faf3d-ecf9-4bfe-8073-405021570776'; // Using a public/demo key or fallback to standard if needed
+        const rpcUrl = import.meta.env.VITE_SOLANA_RPC_URL || 'https://api.devnet.solana.com';
         const u = createUmi(rpcUrl)
             .use(mplCore())
             .use(irysUploader({
