@@ -5,8 +5,11 @@
 // knows how Solana and EVM differ.
 
 import { Hono } from 'hono'
-import { Buffer } from 'buffer'
-;(globalThis as any).Buffer = Buffer
+
+// Buffer is not imported or polyfilled here. The nodejs_compat flag at this compatibility date
+// (2024-09-23 or later) puts a working Buffer on globalThis already - verified in workerd, not
+// assumed - so `import { Buffer } from 'buffer'` was resolving to the userland npm package and
+// bundling ~50KB of shim to shadow a global that was already correct.
 
 import { CHAINS, CHAIN_CONFIG, EVM_CHAIN_ID } from './chains'
 import { withPrisma, getConnectionString } from './db'
