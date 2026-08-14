@@ -33,3 +33,6 @@ yarn-error.log*
 # architect run artifacts (local only)
 docs/runs/
 docs/jobs/
+
+# build output
+*.tsbuildinfo
