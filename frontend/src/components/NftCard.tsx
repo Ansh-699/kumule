@@ -52,7 +52,7 @@ export const NftCard = ({ nft }: { nft: Nft }) => {
                 'group relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.07]',
                 'bg-[#0e1018] transition-all duration-300',
                 'hover:-translate-y-1 hover:border-white/[0.14]',
-                `hover:${ui.glow}`
+                ui.hoverGlow
             )}
         >
             <div className="relative aspect-square">

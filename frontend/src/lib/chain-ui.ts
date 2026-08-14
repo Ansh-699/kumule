@@ -12,7 +12,13 @@ export type ChainUi = {
     /** Tailwind classes for the badge, tuned for the dark surface in the mockup. */
     badge: string
     accent: string
-    glow: string
+    /**
+     * Complete class including the `hover:` prefix, never assembled at a call site.
+     * Tailwind's scanner reads source files as plain text - a class built by interpolation
+     * (`` `hover:${ui.glow}` ``) is invisible to it and gets purged from the production
+     * bundle, so the effect worked in dev and silently vanished in the built CSS.
+     */
+    hoverGlow: string
     network: string
     explorerAddress: (a: string) => string
     explorerTx: (h: string) => string
@@ -25,7 +31,7 @@ export const CHAIN_UI: Record<Chain, ChainUi> = {
         currency: 'SOL',
         badge: 'bg-gradient-to-br from-[#14F195]/20 to-[#9945FF]/20 text-[#14F195] ring-1 ring-[#14F195]/30',
         accent: 'text-[#14F195]',
-        glow: 'shadow-[0_0_24px_-8px_rgba(20,241,149,0.45)]',
+        hoverGlow: 'hover:shadow-[0_0_24px_-8px_rgba(20,241,149,0.45)]',
         network: 'Solana Devnet',
         explorerAddress: (a) => `https://explorer.solana.com/address/${a}?cluster=devnet`,
         explorerTx: (h) => `https://explorer.solana.com/tx/${h}?cluster=devnet`,
@@ -36,7 +42,7 @@ export const CHAIN_UI: Record<Chain, ChainUi> = {
         currency: 'ETH',
         badge: 'bg-gradient-to-br from-[#8A92B2]/25 to-[#627EEA]/25 text-[#A6B1FF] ring-1 ring-[#627EEA]/40',
         accent: 'text-[#A6B1FF]',
-        glow: 'shadow-[0_0_24px_-8px_rgba(98,126,234,0.5)]',
+        hoverGlow: 'hover:shadow-[0_0_24px_-8px_rgba(98,126,234,0.5)]',
         network: 'Base Sepolia',
         explorerAddress: (a) => `https://sepolia.basescan.org/address/${a}`,
         explorerTx: (h) => `https://sepolia.basescan.org/tx/${h}`,
