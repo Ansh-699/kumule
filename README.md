@@ -7,7 +7,9 @@
 One marketplace over two chains: **Solana devnet** (MPL Core, escrow program) and
 **Base Sepolia** (ERC-721 + marketplace contract). Testnets only — no real funds.
 
-[Live demo](https://frontend.ansht.workers.dev/)
+[Live demo](https://kumele.ansht.workers.dev/) — this is what `frontend/` deploys to.
+`frontend.ansht.workers.dev` is a **v1 worker still running**: Solana-only, pointed at the old
+backend, and not deployed from this branch.
 
 Prices are native per chain: SOL for Solana listings, ETH for Base ones. No wrapped or
 stablecoin pricing, and no cross-chain conversion — a bare number is meaningless across

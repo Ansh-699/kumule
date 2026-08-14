@@ -265,9 +265,21 @@ await check('Music', 'list albums', '/api/albums', {
     expect: [200],
     validate: (b) => Array.isArray(b?.albums) ? true : notDbDrift(b),
 })
-await check('Music', 'create album rejects empty body', '/api/albums', {
-    method: 'POST', body: {}, expect: [400],
+// 401, not 400: album writes sit behind adminAuth now, and authentication has to run before
+// body validation. This asserted 400 while the route was genuinely open to anyone - the same
+// gap that let an unauthenticated DELETE reach prisma.album.delete().
+await check('Music', 'create album requires the admin key', '/api/albums', {
+    method: 'POST', body: {}, expect: [401, 503],
 })
+await check('Music', 'album delete requires the admin key', '/api/albums/00000000-0000-0000-0000-000000000000', {
+    method: 'DELETE', expect: [401, 503],
+})
+if (ADMIN_KEY) {
+    // With the key, the body check the old assertion was aiming at is reachable again.
+    await check('Music', 'create album rejects an empty body once authenticated', '/api/albums', {
+        method: 'POST', body: {}, headers: { 'X-Admin-API-Key': ADMIN_KEY }, expect: [400],
+    })
+}
 
 console.log('\nStorage')
 await check('Storage', 'image upload rejects wrong content-type', '/api/upload/image', {

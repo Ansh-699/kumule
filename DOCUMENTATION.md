@@ -3,7 +3,8 @@
 Multi-chain NFT marketplace: **Solana devnet** and **Base Sepolia**. Artwork, music albums
 and event medals. Testnets only.
 
-**Live demo:** [https://frontend.ansht.workers.dev](https://frontend.ansht.workers.dev)
+**Live demo:** [https://kumele.ansht.workers.dev](https://kumele.ansht.workers.dev)
+(`frontend.ansht.workers.dev` is a leftover v1 worker, not deployed from this branch)
 **Solana escrow program:** `3ozh4TQJbeyXFUuXsj7fYmHB5aCVkg24cZN5zZmigR44`
 **Base Sepolia contracts:** NFT `0x416e7Fd93fc2210540AAC1c1cC17a851148DfEBD`,
 marketplace `0x032774De36621265dc21056026372D7bA6f477eC`
