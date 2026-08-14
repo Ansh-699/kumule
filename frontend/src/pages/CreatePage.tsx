@@ -108,7 +108,7 @@ export const CreatePage = () => {
             const { signature } = await signAndSend(solana, transaction)
 
             setState({ kind: 'done', assetId: mintAddress, explorerUrl: ui.explorerTx(signature) })
-        } catch (e: any) {
+        } catch (e) {
             setState({ kind: 'error', message: describeError(e) })
         }
     }

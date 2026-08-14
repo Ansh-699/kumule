@@ -7,7 +7,8 @@ import { api, type Chain, type SortKey } from '@/lib/api'
 import { CHAIN_UI, SORT_OPTIONS, formatCount, formatPrice } from '@/lib/chain-ui'
 import { NftCard, NftRow, NftCardSkeleton } from '@/components/NftCard'
 import { ChainMark } from '@/components/ChainBadge'
-import { FilterSidebar, EMPTY_FILTERS, filtersToQuery, type Filters } from '@/components/FilterSidebar'
+import { FilterSidebar } from '@/components/FilterSidebar'
+import { EMPTY_FILTERS, filtersToQuery, type Filters } from '@/lib/filters'
 
 const PAGE_SIZE = 24
 

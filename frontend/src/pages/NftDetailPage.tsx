@@ -211,7 +211,7 @@ export const NftDetailPage = () => {
             })
             setPending({ hash, kind: 'buy' })
             setTx({ kind: 'confirming', message: 'Waiting for confirmation…', hash })
-        } catch (e: any) {
+        } catch (e) {
             // Surfaced, never swallowed. A wallet rejection is a normal outcome and reads as
             // such; a blocked network call explains itself instead of saying "Failed to fetch".
             setTx({ kind: 'error', message: describeError(e) })
@@ -254,7 +254,7 @@ export const NftDetailPage = () => {
                 explorerUrl: ui.explorerTx(signature),
             })
             refresh()
-        } catch (e: any) {
+        } catch (e) {
             setTx({ kind: 'error', message: describeError(e) })
         }
     }
@@ -300,7 +300,7 @@ export const NftDetailPage = () => {
             })
             setPending({ hash, kind: 'list' })
             setTx({ kind: 'confirming', message: 'Waiting for confirmation…', hash })
-        } catch (e: any) {
+        } catch (e) {
             setTx({ kind: 'error', message: describeError(e) })
         }
     }
@@ -336,7 +336,7 @@ export const NftDetailPage = () => {
                 explorerUrl: ui.explorerTx(signature),
             })
             refresh()
-        } catch (e: any) {
+        } catch (e) {
             setTx({ kind: 'error', message: describeError(e) })
         }
     }
@@ -371,7 +371,7 @@ export const NftDetailPage = () => {
                 explorerUrl: ui.explorerTx(signature),
             })
             refresh()
-        } catch (e: any) {
+        } catch (e) {
             setTx({ kind: 'error', message: describeError(e) })
         }
     }
@@ -400,7 +400,7 @@ export const NftDetailPage = () => {
                 explorerUrl: result.explorerUrl,
             })
             setConfirmBurn(false)
-        } catch (e: any) {
+        } catch (e) {
             setTx({ kind: 'error', message: describeError(e) })
             setConfirmBurn(false)
         }

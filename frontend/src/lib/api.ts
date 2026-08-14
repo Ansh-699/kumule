@@ -51,7 +51,7 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
     }
 
     const text = await res.text()
-    let body: any = null
+    let body: unknown = null
     try {
         body = text ? JSON.parse(text) : null
     } catch {
@@ -60,7 +60,9 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
     }
 
     if (!res.ok) {
-        throw new ApiError(res.status, body?.error ?? res.statusText, body?.details)
+        // The error shape every handler in the worker returns, narrowed only where it is read.
+        const failure = body as { error?: string; details?: string } | null
+        throw new ApiError(res.status, failure?.error ?? res.statusText, failure?.details)
     }
     return body as T
 }
