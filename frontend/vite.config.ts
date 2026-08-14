@@ -14,36 +14,26 @@ const __dirname = path.dirname(__filename);
 export default defineConfig({
   define: {
     'process.env': {},
-    'process.version': JSON.stringify('v16.0.0'),
   },
   plugins: [
     react(),
     cloudflare(),
     tailwindcss(),
+    // @solana/web3.js and the wallet adapters expect Buffer, global and process to exist. The
+    // stream and fs shims that used to sit alongside these were for umi and the Irys uploader,
+    // which this frontend does not use: transactions are built on the backend and signed here
+    // with raw web3.js.
     nodePolyfills({
       globals: {
         Buffer: true,
         global: true,
         process: true,
       },
-      exclude: ['fs'],
     }),
   ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
-      "stream/promises": path.resolve(__dirname, "./src/polyfills/stream-promises.ts"),
-      "readable-stream/promises": path.resolve(__dirname, "./src/polyfills/stream-promises.ts"),
-      "stream": "stream-browserify",
-      "fs": path.resolve(__dirname, "./src/polyfills/fs-polyfill.ts"),
-    },
-  },
-  optimizeDeps: {
-    include: ['@metaplex-foundation/umi', '@metaplex-foundation/umi-bundle-defaults', '@metaplex-foundation/mpl-core', '@metaplex-foundation/umi-uploader-irys', 'readable-stream', '@irys/bundles'],
-    esbuildOptions: {
-      define: {
-        global: 'globalThis',
-      },
     },
   },
   build: {
