@@ -1,382 +1,202 @@
-# NFT Marketplace Documentation
+# Kumule — operator documentation
 
-## Overview
+Multi-chain NFT marketplace: **Solana devnet** and **Base Sepolia**. Artwork, music albums
+and event medals. Testnets only.
 
-A decentralized NFT marketplace on Solana Devnet with support for artwork, music albums, and event badges.
+**Live demo:** [https://frontend.ansht.workers.dev](https://frontend.ansht.workers.dev)
+**Solana escrow program:** `3ozh4TQJbeyXFUuXsj7fYmHB5aCVkg24cZN5zZmigR44`
+**Base Sepolia contracts:** NFT `0x416e7Fd93fc2210540AAC1c1cC17a851148DfEBD`,
+marketplace `0x032774De36621265dc21056026372D7bA6f477eC`
 
-**Live Demo:** [https://frontend.ansht.workers.dev](https://frontend.ansht.workers.dev)
-
-**Escrow Program ID:** `3ozh4TQJbeyXFUuXsj7fYmHB5aCVkg24cZN5zZmigR44`
+For the architecture — data flows, schema, security model, file layout — see
+`ARCHITECTURE.md`. This file is the operator's view: run it, configure it, deploy it.
 
 ---
 
-## Quick Start
+## Quick start
 
 ### Prerequisites
-- Node.js 18+ or Bun
-- Solana CLI (for program deployment)
-- Cloudflare account (for deployment)
 
-### Backend Setup
+- Node.js 20+
+- Solana CLI and Anchor, only if you are deploying the escrow program
+- Foundry, only if you are deploying the Base contracts
+- Podman or Docker, only if you want to run the database-backed checks
+
+### Backend
 
 ```bash
 cd workerbackend
-bun install
+npm install --legacy-peer-deps    # umi's peer ranges conflict; npm ci will not resolve
 
-# Create environment file
-cp .dev.vars.example .dev.vars
-# Edit .dev.vars with your credentials
+cp .dev.vars.example .dev.vars    # DATABASE_URL and ADMIN_API_KEY are the only required ones
 
-# Generate Prisma client
-npx prisma generate
-
-# Push database schema
-npx prisma db push
-
-# Start dev server
-bun run dev
-# → http://localhost:8788
+DATABASE_URL=... npx prisma migrate deploy
+npm run dev                       # → http://localhost:8787
 ```
 
-### Frontend Setup
+Neon's `channel_binding=require` breaks the Prisma CLI with P1001 even though the runtime
+adapter handles it. Strip that parameter for CLI commands only.
+
+### Frontend
 
 ```bash
 cd frontend
-bun install
-
-# Create environment file
-cp .env.example .env
-# Edit .env with your RPC URL
-
-# Start dev server
-bun run dev
-# → http://localhost:5173
+npm install --legacy-peer-deps
+cp .env.example .env              # every value is optional; defaults hit the deployed API
+npm run dev                       # → http://localhost:5173
 ```
 
 ---
 
-## Environment Variables
+## Environment variables
 
-### Backend (.dev.vars)
+Both `.example` files list every variable the code actually reads, what each does, and
+what happens when it is unset. They are the reference; this table is a summary.
 
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | Neon PostgreSQL connection string |
-| `SOLANA_RPC_URL` | Helius or other Solana RPC endpoint |
-| `COINBASE_COMMERCE_API_KEY` | Coinbase Commerce API key |
-| `ADMIN_API_KEY` | Admin dashboard authentication key |
+### Backend — `workerbackend/.dev.vars`
 
-### Frontend (.env)
+| Variable | Required | Unset behaviour |
+|----------|----------|-----------------|
+| `DATABASE_URL` | yes | Database-backed routes answer 503 |
+| `ADMIN_API_KEY` | yes | Every admin route answers 503 |
+| `SOLANA_RPC_URL` | no | Public devnet endpoint, which rate-limits |
+| `BASE_SEPOLIA_RPC_URL` | no | `base-sepolia-rpc.publicnode.com` |
+| `EVM_NFT_ADDRESS`, `EVM_MARKET_ADDRESS` | no | The deployed pair above |
+| `MINT_FEE_LAMPORTS`, `MINT_FEE_TREASURY` | no | Minting is free; caller pays their own network fee |
+| `MEDAL_VAULT_PRIVATE_KEY` | no | Medal minting and claiming answer 503 |
+| `PUBLIC_URL` | no | Asset URLs derived from the request host |
 
-| Variable | Description |
-|----------|-------------|
-| `VITE_SOLANA_RPC_URL` | Solana RPC URL for wallet connections |
+### Frontend — `frontend/.env`
 
----
-
-## Features
-
-### NFT Minting
-- Upload images/audio to Cloudflare R2
-- Auto-generate metadata JSON
-- Duplicate mint prevention
-- Wallet or Coinbase payment options
-
-### Marketplace
-- List NFTs for sale (escrow-based)
-- Browse and buy NFTs
-- Cancel listings
-- Atomic swap via Solana program
-
-### Music Albums
-- Create albums with multiple tracks
-- Upload audio files (up to 100MB)
-- Stream with HTTP range support
-- Generate per-track NFT metadata
-
-### Events & Badges
-- Create events with entry fees
-- Mint attendance badges
-- Event escrow for payments
-
-### Rewards System
-- Loyalty meter for interactions
-- Claim reward NFTs at milestones
-
-### Security
-- Transaction checksum verification
-- Duplicate mint detection
-- Security event logging
-- Admin-only endpoints
+| Variable | Unset behaviour |
+|----------|-----------------|
+| `VITE_API_BASE` | The deployed worker |
+| `VITE_SOLANA_RPC` | `api.devnet.solana.com` |
+| `VITE_BASE_SEPOLIA_RPC` | wagmi's default for the chain |
 
 ---
 
-## API Reference
+## API reference
 
-### Core Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/mint` | POST | Mint new NFT |
-| `/list` | POST | List NFT for sale |
-| `/buy` | POST | Buy listed NFT |
-| `/cancel` | POST | Cancel listing |
-| `/listings` | GET | Get all listings |
-| `/owner?owner=<wallet>` | GET | Get NFTs by owner |
-
-### Album Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/albums` | GET | List all albums |
-| `/api/albums` | POST | Create album |
-| `/api/albums/:id` | GET | Get album with tracks |
-| `/api/albums/:id` | PUT | Update album |
-| `/api/albums/:id` | DELETE | Delete album |
-| `/api/albums/:id/tracks` | POST | Add track |
-| `/api/albums/:id/tracks/:trackId` | PUT | Update track |
-| `/api/albums/:id/tracks/:trackId` | DELETE | Delete track |
-
-### Upload Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/upload/image` | POST | Upload image (multipart) |
-| `/api/upload/audio` | POST | Upload audio (multipart) |
-| `/api/upload/metadata` | POST | Upload JSON metadata |
-| `/cdn/images/:filename` | GET | Serve image |
-| `/cdn/audio/:filename` | GET | Stream audio |
-
-### Event Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/events` | GET | List events |
-| `/api/events` | POST | Create event |
-| `/api/events/:id/join` | POST | Join event |
-
-### Security Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/audit/verify/:transactionId` | GET | Verify transaction checksum |
-
----
-
-## Request/Response Examples
-
-### Mint NFT
+`GET /openapi.json` on any running worker is the reference, and it is not hand-maintained
+prose: `workerbackend/openapi-check.ts` compares it against the route table in
+`src/index.ts` and fails when they drift. A table copied into this file would be one more
+thing to keep in sync, and the last one silently rotted through a whole product rewrite.
 
 ```bash
-curl -X POST http://localhost:8788/mint \
-  -H "Content-Type: application/json" \
-  -d '{
-    "uri": "https://your-worker.workers.dev/cdn/metadata/abc123.json",
-    "name": "My NFT",
-    "owner": "YourWalletPublicKey"
-  }'
+curl -s http://localhost:8787/openapi.json | jq '.paths | keys'
 ```
 
-Response:
+The shape, so you know where to look:
+
+| Prefix | What lives there |
+|--------|------------------|
+| `/api/nfts`, `/api/listings`, `/api/collections`, `/api/stats` | Chain-agnostic marketplace reads |
+| `/api/solana/*` | Mint, list, buy, cancel, transfer, burn — the worker builds, the wallet signs |
+| `/api/evm/*` | Base Sepolia reads and post-transaction indexing |
+| `/api/settle` | Reconciles the database with the chain after any wallet-signed action |
+| `/api/events/*` | Events, leaderboards, medal claims |
+| `/api/albums/*` | Music albums and tracks (writes are admin-only) |
+| `/api/upload/*`, `/cdn/*` | R2 uploads and serving |
+| `/api/admin/*` | Everything behind `X-Admin-API-Key` |
+| `/health`, `/debug/db`, `/api/chains`, `/openapi.json` | Diagnostics |
+
+Two things worth knowing before you call anything:
+
+- **Nothing takes an outcome from the caller.** Every write path is handed a transaction
+  hash and verifies it against the chain, then re-reads ownership from the chain. A client
+  cannot report a sale that did not happen.
+- **Prices are decimal strings, never numbers.** A JSON number would round `0.000025`.
+
+### Verifying a transaction record
+
+```bash
+curl -H "X-Admin-API-Key: $ADMIN_API_KEY" \
+  http://localhost:8787/api/admin/audit/<txHash-or-row-id>
+```
+
 ```json
-{
-  "transaction": "base64-encoded-transaction",
-  "mint": "NFTAssetPublicKey"
-}
+{ "valid": true, "message": "Checksum verified" }
 ```
 
-### Create Album
-
-```bash
-curl -X POST http://localhost:8788/api/albums \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "My Album",
-    "artist": "Artist Name",
-    "creatorWallet": "YourWalletPublicKey",
-    "description": "Album description",
-    "coverUrl": "https://example.com/cover.jpg"
-  }'
-```
-
-### Upload Audio
-
-```bash
-curl -X POST http://localhost:8788/api/upload/audio \
-  -F "file=@track.mp3" \
-  -F "filename=my-track.mp3"
-```
-
-Response:
-```json
-{
-  "success": true,
-  "url": "https://your-worker.workers.dev/cdn/audio/my-track.mp3",
-  "integrityHash": "sha256-abc123..."
-}
-```
-
-### Verify Transaction
-
-```bash
-curl http://localhost:8788/api/audit/verify/txn_123456
-```
-
-Response:
-```json
-{
-  "valid": true,
-  "message": "Checksum verified"
-}
-```
-
----
-
-## Frontend Components
-
-| Component | Route | Description |
-|-----------|-------|-------------|
-| `MarketplaceList` | `/marketplace` | Browse NFT listings |
-| `UserNftList` | `/my-nfts` | View/list owned NFTs |
-| `NftCreator` | `/create` | Mint new NFTs |
-| `AlbumPage` | `/album/:id` | View album with tracks |
-| `EventsPage` | `/events` | Browse/join events |
-| `RewardSystem` | `/rewards` | Loyalty rewards |
-| `AdminDashboard` | `/admin` | Admin controls |
-
-### NftCard Features
-- **Type Badges:** Music, Video, Event Badge, Artwork
-- **Explorer Links:** Click to view on Solana Explorer
-- **Audio Player:** Inline playback for music NFTs
+Returns 400 with `valid: false` when the row's stored checksum does not match one
+recomputed from its own columns. Every transaction kind writes one — see the transaction
+integrity section of `ARCHITECTURE.md` for what the checksum covers.
 
 ---
 
 ## Testing
 
-### Run Tests
-
 ```bash
-# Anchor program tests
-anchor test
-
-# Worker tests
-cd workerbackend && bun test
-
-# Database connection test
-cd workerbackend && bun run test-db.ts
-
-# E2E flow test
-cd frontend && node test-full-flow.mjs
+cd workerbackend && npm run check   # typecheck + bundle + every unit check
+cd frontend && npm run build        # tsc -b && vite build
+anchor test                         # the Solana escrow program, against tests/
+cd contracts-evm && forge test      # the Base Sepolia contracts
 ```
 
-### Manual Testing
+`npm run check` runs three stages and all three matter. `check:build` is
+`wrangler deploy --dry-run`: esbuild resolves packages under different conditions than
+Node ESM does, so a clean typecheck and green unit checks can describe a worker that
+cannot be bundled at all. That is not hypothetical — it is why the stage exists.
+
+`db-flows-check.ts` runs the real handlers against a real Postgres through the shipped
+Neon adapter. It skips loudly without a database, so `npm run check` still works on a bare
+machine; to actually run it:
 
 ```bash
-# Health check
-curl http://localhost:8788/health
+podman run -d --name kumule-pg -e POSTGRES_PASSWORD=kumule -e POSTGRES_USER=kumule \
+  -e POSTGRES_DB=kumule -p 55432:5432 docker.io/library/postgres:16-alpine
+DATABASE_URL=postgresql://kumule:kumule@localhost:55432/kumule npx prisma migrate deploy
+```
 
-# Get listings
-curl http://localhost:8788/listings
-
-# Get albums
-curl http://localhost:8788/api/albums
+```bash
+npm run test:api                     # read-only smoke test, safe against production
+BASE=http://localhost:8787 npm run test:api
 ```
 
 ---
 
 ## Deployment
 
-### Deploy Backend
-
 ```bash
 cd workerbackend
-
-# Set secrets
 npx wrangler secret put DATABASE_URL
-npx wrangler secret put SOLANA_RPC_URL
-npx wrangler secret put COINBASE_COMMERCE_API_KEY
 npx wrangler secret put ADMIN_API_KEY
+npm run deploy
 
-# Deploy
-bun run deploy
-```
-
-### Deploy Frontend
-
-```bash
 cd frontend
-bun run build
-npx wrangler pages deploy dist
+npm run deploy
 ```
 
----
-
-## Database Schema
-
-### Core Models
-- **User** - User accounts
-- **Wallet** - Connected wallets (Solana)
-- **NFT** - Minted NFTs with metadata URIs
-- **Transaction** - Payment/mint transactions
-
-### Marketplace Models
-- **Escrow** - NFT listings held in escrow
-- **Dispute** - Buyer/seller disputes
-
-### Music Models
-- **Album** - Music album metadata
-- **Track** - Individual tracks with audio URLs
-
-### Event Models
-- **Event** - Event definitions
-- **EventEntry** - User participation
-
----
-
-## Security Features
-
-1. **Duplicate Mint Prevention**
-   - Checks metadata URI before minting
-   - Returns 409 Conflict if duplicate
-
-2. **Transaction Checksums**
-   - SHA-256 hash of transaction parameters
-   - Stored in transaction metadata
-   - Verifiable via `/api/audit/verify/:id`
-
-3. **Security Event Logging**
-   - Duplicate mint attempts
-   - Failed transactions
-   - Unauthorized access attempts
-
-4. **Admin Authentication**
-   - API key required for admin endpoints
-   - Header: `X-Admin-API-Key: your-key`
+Add the optional secrets from the table above as needed. `npm run cf-typegen` regenerates
+`worker-configuration.d.ts` after any binding change.
 
 ---
 
 ## Troubleshooting
 
-### Prisma "album not found" Error
-```bash
-cd workerbackend
-npx prisma generate
-npx prisma db push
-```
+**`P1001` from the Prisma CLI against Neon.** Drop `channel_binding=require` from the URL
+for CLI commands. The runtime adapter is fine with it.
 
-### TypeScript Errors After Schema Change
-Restart VS Code TypeScript server: `Cmd/Ctrl + Shift + P` → "TypeScript: Restart TS Server"
+**`npm ci` fails on peer dependencies.** umi's ranges genuinely conflict. Use
+`npm install --legacy-peer-deps`.
 
-### CORS Errors
-Ensure frontend URL is allowed in backend CORS config (see `index.ts`)
+**A route answers 503 "Database not configured".** `DATABASE_URL` is unset, or it is set
+and `getConnectionString` fell through to a Hyperdrive binding that no longer exists. The
+secret wins over the binding, deliberately.
 
-### RPC Rate Limits
-Backend auto-fallbacks to public devnet RPC if Helius fails
+**Admin routes answer 503.** `ADMIN_API_KEY` is unset. There is no fallback key.
+
+**RPC rate limits on Solana.** The public devnet endpoint throttles. Set `SOLANA_RPC_URL`
+to a paid endpoint; several call sites carry fallbacks but they only soften it.
+
+**A green typecheck but a failing deploy.** Run `npm run check:build`. See the testing
+section.
 
 ---
 
 ## Support
 
 - **GitHub:** [Ansh-699/NFT-Marketplace](https://github.com/Ansh-699/NFT-Marketplace)
-- **Solana Explorer:** [View on Devnet](https://explorer.solana.com/?cluster=devnet)
+- **Solana Explorer:** [devnet](https://explorer.solana.com/?cluster=devnet)
+- **Base Sepolia Explorer:** [sepolia.basescan.org](https://sepolia.basescan.org/)

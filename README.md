@@ -1,100 +1,87 @@
-## NFT Marketplace
+## Kumule — multi-chain NFT marketplace
+
 <p align="center">
   <img src="asset/nftmarketplace.jpg" alt="NFT Marketplace" width="400" height="400" />
 </p>
 
-## Live Working Demo
-You can check out the live demo of the NFT marketplace at the following link:
-[Live Demo](https://frontend.ansht.workers.dev/)
+One marketplace over two chains: **Solana devnet** (MPL Core, escrow program) and
+**Base Sepolia** (ERC-721 + marketplace contract). Testnets only — no real funds.
 
+[Live demo](https://frontend.ansht.workers.dev/)
 
+Prices are native per chain: SOL for Solana listings, ETH for Base ones. No wrapped or
+stablecoin pricing, and no cross-chain conversion — a bare number is meaningless across
+chains, and the filter UI says so rather than quietly comparing the two.
 
-## User Story: Mint, List, and Buy NFTs
+Money never passes through a float on either side. Amounts move as decimal strings and
+base units as `BigInt`, from the chain through the API to the browser.
 
-### 1. Mint an NFT:
-- The user uploads their image and details (like title, description) to the platform.
-- The system generates an NFT (a unique digital item) based on the uploaded details.
+## Flows
 
-### 2. List an NFT for Sale:
-- The user decides to list their minted NFT for sale.
-- The user confirms the listing, and the NFT is now available for others to buy.
+**Mint.** Image goes to R2, then a metadata JSON referencing it, and only then is the mint
+transaction built — so a token is never created pointing at a URI that does not resolve.
+On Solana the worker builds and the wallet signs; on Base the browser signs directly and
+tells the worker to index the token from its own receipt.
 
-### 3. Buy an NFT:
-- A buyer browses the marketplace and selects an NFT they want to purchase.
-- The system processes the payment and transfers the NFT to the buyer.
-- The buyer completes the transaction, and the NFT is now in their wallet.
-- 
-## Architectural Diagram
-<p align="center">
-  <img src="asset/image.png" alt="Architectural diagram" />
-</p>
+**List and buy (Solana).** The worker builds instructions against escrow program
+`3ozh4TQJbeyXFUuXsj7fYmHB5aCVkg24cZN5zZmigR44`, whose source is in `programs/`. Listing
+moves the asset into an escrow PDA; buying is an atomic swap the program validates.
 
-A decentralized NFT marketplace on Solana Devnet using Anchor, MPL Core, and Cloudflare Workers.
+**List and buy (Base).** Both are wallet-signed in the browser against the marketplace
+contract in `contracts-evm/`. The worker only reads.
 
-**Program ID:** 4WyfhmmEu1MoSMDQfiN2JEbQV28gSo6vhm9idEL7ArtG
+**Settlement.** Every wallet-signed action ends at `POST /api/settle` with a transaction
+hash and never an outcome. The worker verifies the hash on chain, re-reads ownership from
+the chain itself, and only then writes the sale. A caller cannot report a sale that did
+not happen or a token they do not hold.
 
-## Architecture Flow
+## Stack
 
-1. **Minting**:
-    - User uploads image and metadata to Irys (decentralized storage) via the Frontend.
-    - Frontend sends metadata URI to Backend (`/mint`).
-    - Backend creates a mint transaction, signs it with a generated asset signer (partial sign), and returns it.
-    - User signs the transaction with their wallet and submits it to Solana.
+- **Frontend** — React 19, Vite, Tailwind v4, wagmi + viem, Solana wallet-adapter
+- **Backend** — Cloudflare Workers (Hono), Prisma over Neon Postgres, R2 for assets
+- **Chains** — Anchor + MPL Core on Solana devnet, Foundry contracts on Base Sepolia
 
-2. **Listing (Escrow)**:
-    - User requests to list an NFT (`/list`).
-    - Backend builds a transaction to initialize an Escrow PDA and deposit the NFT into it.
-    - User signs and submits. The NFT is now held by the program.
+`ARCHITECTURE.md` has the data flows, schema, route map and file layout.
 
-3. **Buying**:
-    - Buyer requests to buy an NFT (`/buy`).
-    - Backend builds a transaction that transfers SOL to the seller and the NFT to the buyer.
-    - Buyer signs and submits. The program validates the trade and executes the atomic swap.
-
-## Tech Stack:
-- **Frontend**: React, Vite, TailwindCSS, Shadcn UI.
-- **Backend**: Cloudflare Workers (Hono), Metaplex Umi.
-- **Blockchain**: Solana (Devnet), Anchor Framework, Metaplex MPL Core.
-
-## Setup Instructions
-
-### 1. Backend Setup (Cloudflare Worker)
+## Setup
 
 ```bash
 cd workerbackend
-
-bun install
-cp .dev.vars.example .dev.vars
-bun run dev
-
+npm install --legacy-peer-deps    # umi's peer ranges conflict; npm ci will not resolve
+cp .dev.vars.example .dev.vars    # DATABASE_URL and ADMIN_API_KEY are the only required ones
+npm run dev                       # :8787
 ```
-
-### 2. Frontend Setup
 
 ```bash
 cd frontend
-bun install
-cp .env.example .env
-# VITE_SOLANA_RPC_URL="https://devnet.helius-rpc.com/?api-key=YOUR_API_KEY"
-bun run dev
+npm install --legacy-peer-deps
+cp .env.example .env              # every value is optional; defaults hit the deployed API
+npm run dev                       # :5173
 ```
 
-### 3. Deploy Backend to Cloudflare Workers
+Before trusting any change:
 
 ```bash
-cd workerbackend
-npx wrangler secret put SOLANA_RPC_URL
-bun run deploy
+cd workerbackend && npm run check   # typecheck + bundle + every unit check
+cd frontend && npm run build
 ```
 
-### 4. Update Frontend API URL
+`npm run check` includes `wrangler deploy --dry-run`. Skipping it is how a branch with a
+clean typecheck and green tests stayed undeployable for twenty commits.
 
-After deploying the backend, update `frontend/src/services/api.ts` with your deployed worker URL.
+## Deploy
 
-## Important Security Notes
+```bash
+cd workerbackend && npm run deploy
+cd frontend && npm run deploy
+```
 
-⚠️ **Never commit API keys to git!**
+Set secrets with `npx wrangler secret put NAME`. `workerbackend/.dev.vars.example` lists
+every variable the worker reads, which are required, and what happens when each is unset.
 
-- `.dev.vars` (backend) and `.env` (frontend) are git-ignored
-- Only `.dev.vars.example` and `.env.example` are committed (without real keys)
-- For production deployment, use Cloudflare secrets (see step 3 above)
+## Security notes
+
+- `.dev.vars` and `.env` are git-ignored; only the `.example` files are committed
+- Admin routes return 503 until `ADMIN_API_KEY` is set — there is no fallback key
+- The admin key is held in component state in the browser, never `localStorage`
+- Devnet and testnet only. Nothing here is configured for mainnet.

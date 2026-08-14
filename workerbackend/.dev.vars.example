@@ -1,29 +1,42 @@
+# Copy to .dev.vars (git-ignored). In production these are Cloudflare secrets.
+#
+# Every variable here is one the worker actually reads. If you add one, add it to
+# CloudflareBindings via `npm run cf-typegen` too.
 
-# Get your API key from: https://www.helius.dev/
-SOLANA_RPC_URL="https://devnet.helius-rpc.com/?api-key=YOUR_HELIUS_API_KEY_HERE"
+# --- required -----------------------------------------------------------------
 
-# Get your Coinbase CDP API keys from: https://portal.cdp.coinbase.com/projects/api-keys
-COINBASE_API_KEY_NAME="your-api-key-name"
-COINBASE_API_KEY_PRIVATE_KEY="your-api-key-private-key"
+# Postgres. Neon's pooler endpoint in production; anything Postgres-shaped locally.
+# db.ts prefers this over the Hyperdrive binding, deliberately: an inherited binding
+# should never silently override an explicitly set secret.
+DATABASE_URL="postgresql://user:password@host/db?sslmode=require"
 
-# Get your Coinbase Commerce API key from: https://commerce.coinbase.com/dashboard/settings
-COINBASE_COMMERCE_API_KEY="your-coinbase-commerce-api-key"
-
-# Coinbase Commerce webhook shared secret - webhooks are rejected without it
-COINBASE_WEBHOOK_SECRET="your-coinbase-webhook-shared-secret"
-
-# Stub payments that auto-confirm without a real charge. Local/testing only.
-# NEVER set this in production: it makes /api/payment/create hand out fake "paid"
-# charges, and mint.ts mints whenever a charge reads COMPLETED. Leave it unset and
-# payment endpoints fail closed with 503 until COINBASE_COMMERCE_API_KEY is configured.
-# PAYMENTS_DEMO_MODE="true"
-
-# Admin API key for /api/admin/* - no default, admin routes 503 until this is set
+# Admin routes 503 until this is set. There is no default - a shared fallback key is
+# the same as no key.
 ADMIN_API_KEY="generate-a-long-random-value"
 
-# Base58 admin wallet private key, used to sign reward NFT transfers
-ADMIN_WALLET_PRIVATE_KEY="your-base58-admin-wallet-private-key"
+# --- optional, with working defaults ------------------------------------------
 
-# Local Hyperdrive connection string (also settable as
-# WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE)
-DATABASE_URL="postgresql://user:password@host/db?sslmode=require"
+# Defaults to https://api.devnet.solana.com. A paid endpoint is worth it: the public
+# devnet node rate-limits, which is why several call sites carry RPC fallbacks.
+# SOLANA_RPC_URL="https://devnet.helius-rpc.com/?api-key=YOUR_KEY"
+
+# Defaults to https://base-sepolia-rpc.publicnode.com.
+# BASE_SEPOLIA_RPC_URL="https://sepolia.base.org"
+
+# Base Sepolia contracts. Defaults are the deployed pair in contracts-evm/.
+# EVM_NFT_ADDRESS="0x416e7Fd93fc2210540AAC1c1cC17a851148DfEBD"
+# EVM_MARKET_ADDRESS="0x032774De36621265dc21056026372D7bA6f477eC"
+
+# Charge a mint fee. Unset means minting is free and the caller pays only their own
+# network fee. Setting the fee without the treasury is refused rather than ignored.
+# MINT_FEE_LAMPORTS="10000000"
+# MINT_FEE_TREASURY="<base58 solana address>"
+
+# Base58 secret key of the wallet holding unclaimed event medals. Medal minting and
+# claiming return 503 without it - the vault must sign the transfer, so the user's own
+# wallet cannot.
+# MEDAL_VAULT_PRIVATE_KEY="<base58 64-byte secret key>"
+
+# Absolute origin used to build R2 asset URLs. Derived from the request when unset,
+# which is right for local dev and wrong behind a proxy that rewrites the host.
+# PUBLIC_URL="https://kumele-backend.example.workers.dev"

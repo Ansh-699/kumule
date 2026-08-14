@@ -1,79 +1,78 @@
 # Kumule backend worker
 
 Cloudflare Workers + Hono API for the Kumule NFT marketplace. Solana devnet via MPL Core,
-Postgres (Neon) through Prisma + Hyperdrive, R2 for images/audio/metadata.
+Base Sepolia via viem, Postgres (Neon) through Prisma's Neon driver adapter, R2 for
+images, audio and metadata.
 
 ## Setup
 
 ```txt
-bun install                 # or npm install
+npm install --legacy-peer-deps   # umi's peer ranges conflict; npm ci will not resolve
 cp .dev.vars.example .dev.vars
-bun run dev                 # wrangler dev on :8787
+npm run dev                      # wrangler dev on :8787
 ```
 
 Every secret is read from `.dev.vars` locally and from Cloudflare secrets in production.
 Nothing sensitive belongs in `wrangler.jsonc` — it is committed.
 
-## Testing
+## Checks
 
 ```txt
-bun run test:api            # end-to-end smoke test against the deployed worker
-BASE=http://localhost:8787 bun run test:api
-ADMIN_KEY=... bun run test:api      # also verifies the admin key authenticates
-
-bun run test:security       # auth + payment-verification regression asserts
+npm run check          # typecheck + bundle + every unit check. Run this one.
 ```
 
-`test:api` is read-only. It never mints, lists, buys, or writes a row, so it is safe to
-point at production. Exit code is the number of failed checks.
+The three stages exist separately because each catches what the others cannot:
+
+```txt
+npm run typecheck      # tsc --noEmit
+npm run check:build    # wrangler deploy --dry-run
+npm run check:units    # the *-check.ts files
+```
+
+`check:build` is not optional ceremony. esbuild resolves packages under different
+conditions than Node ESM does, so **a clean `tsc` and green unit checks can describe a
+worker that cannot be bundled at all** — which is exactly what happened in Aug 2026, when
+an import that both `tsc` and `tsx` accepted broke the deploy for a week's worth of
+commits. If it is not in `npm run check`, assume nobody runs it.
+
+Each `*-check.ts` pins one behaviour and says which bug it exists for, in its header. They
+are plain scripts: no framework, no runner, `process.exit(1)` on failure.
+
+`db-flows-check.ts` is the only one that needs anything external. It runs the real handlers
+against a real Postgres through the shipped Neon adapter — see `db-harness.ts` for how,
+and its header for the two commands that start a database. Without one it skips loudly
+rather than failing, so `npm run check` still works on a bare machine.
+
+```txt
+npm run test:api                          # read-only smoke test, safe against production
+BASE=http://localhost:8787 npm run test:api
+ADMIN_KEY=... npm run test:api            # also exercises admin authentication
+```
+
+`test:api` never mints, lists, buys, or writes a row. Exit code is the number of failures.
 
 ## Database
 
-`schema.prisma` is the source of truth. The live database had drifted from it — several
-tables were missing entirely, which surfaced as `500 … table does not exist` on every
-events, rewards, albums, disputes, and payment-log endpoint.
-
-`prisma migrate deploy` cannot repair that (there is no `_prisma_migrations` baseline) and
-`migrate dev` / `migrate reset` would drop live rows. So drift is repaired additively:
+`prisma/schema.prisma` is the source of truth and `prisma/migrations/` is the history.
 
 ```txt
-bun run db:check            # report which tables/columns are missing, change nothing
-bun run db:repair           # apply prisma/bootstrap.sql
+DATABASE_URL=... npx prisma migrate deploy
 ```
 
-`bootstrap.sql` is generated, idempotent, and wrapped in a transaction. It creates missing
-tables, columns, indexes, and foreign keys and **never drops a table, column, or row**. A
-failure rolls back and leaves the database untouched.
-
-Regenerate it whenever `schema.prisma` changes:
-
-```txt
-bun run db:bootstrap:build  # > prisma/bootstrap.sql
-```
-
-## Payments
-
-Payment verification fails closed. `checkChargeStatus` reports `COMPLETED` only when
-Coinbase confirms it — a missing API key, a rejected key, an unknown charge id, or an
-unreachable processor all report `UNVERIFIED`, and `mint.ts` refuses to mint on anything
-but `COMPLETED`.
-
-`PAYMENTS_DEMO_MODE="true"` opts into stub charges that auto-confirm. It is for local
-testing only; with it set, anyone can mint without paying. Production must leave it unset,
-which means `/api/payment/create` returns 503 until `COINBASE_COMMERCE_API_KEY` is
-configured.
+Neon's `channel_binding=require` breaks the Prisma CLI with P1001 even though the runtime
+adapter handles it fine. Strip that parameter for CLI commands only.
 
 ## Deploy
 
 ```txt
-bun run deploy
+npm run deploy
+npm run cf-typegen     # regenerate worker-configuration.d.ts after binding changes
 ```
 
-Required Cloudflare secrets: `SOLANA_RPC_URL`, `DATABASE_URL` (or the Hyperdrive binding),
-`ADMIN_API_KEY`, `ADMIN_WALLET_PRIVATE_KEY`, `COINBASE_COMMERCE_API_KEY`,
-`COINBASE_WEBHOOK_SECRET`. Admin routes return 503 until `ADMIN_API_KEY` is set, rather
-than falling back to a shared default.
+Secrets: `DATABASE_URL` and `ADMIN_API_KEY` are required; `SOLANA_RPC_URL`,
+`BASE_SEPOLIA_RPC_URL`, `EVM_NFT_ADDRESS`, `EVM_MARKET_ADDRESS`, `MINT_FEE_LAMPORTS`,
+`MINT_FEE_TREASURY`, `MEDAL_VAULT_PRIVATE_KEY` and `PUBLIC_URL` are optional. See
+`.dev.vars.example` for what each one does and what happens when it is unset.
 
-```txt
-bun run cf-typegen          # regenerate worker-configuration.d.ts after binding changes
-```
+Admin routes return 503 until `ADMIN_API_KEY` is set, rather than falling back to a shared
+default.

@@ -31,13 +31,11 @@
   //     "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   //   }
   // ],
+  // One binding, one bucket. NFT_BUCKET was a second name for this same bucket that no
+  // code ever read - two handles to one store is how a write goes to the wrong one.
   "r2_buckets": [
     {
       "binding": "NFT_IMAGES",
-      "bucket_name": "nftimages"
-    },
-    {
-      "binding": "NFT_BUCKET",
       "bucket_name": "nftimages"
     }
   ],

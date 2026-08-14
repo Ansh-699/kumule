@@ -193,12 +193,20 @@ wrong in every particular:
 │     │ disagree by one field, every verification     │       │
 │     │ becomes a false tamper alarm.                 │       │
 │     │                                               │       │
+│     │ amount is canonicalised through Decimal       │       │
+│     │ before hashing: Postgres stores 1.10 as 1.1,  │       │
+│     │ and the reader hashes what comes back.        │       │
+│     │                                               │       │
 │     │ -> transaction.metadata._checksum             │       │
 │     └───────────────────────────────────────────────┘       │
 │                                                             │
-│     Written by mint.ts at insert time. Before Aug 2026      │
-│     nothing wrote it at all, so verification always         │
-│     answered "missing checksum data".                       │
+│     Every writer goes through auditedTransactionData(),     │
+│     which returns the row rather than writing it, because   │
+│     each caller is already inside a withPrisma block.       │
+│     Writers: mint, escrow, transfer, burn, medals, settle.  │
+│     Until Aug 2026 only mint wrote a checksum, so the       │
+│     other five kinds could only answer "missing checksum    │
+│     data". audit-check.ts asserts the whole set.            │
 │                                                             │
 │  2. VERIFICATION ENDPOINT (adminAuth required)              │
 │     GET /api/admin/audit/:identifier                        │
@@ -277,16 +285,17 @@ kumule-v2/
 │   │   ├── ConnectForChain.tsx   # Per-chain connect prompt
 │   │   ├── LikeButton.tsx        # Favorite toggle
 │   │   ├── Layout.tsx            # Shell and nav
-│   │   ├── Providers.tsx         # wagmi + wallet-adapter + query
-│   │   └── ui/                   # shadcn primitives
-│   ├── lib/
-│   │   ├── api.ts                # API client, API_BASE, shared request()
-│   │   ├── chain-ui.ts           # Chain presentation, price formatting
-│   │   ├── evm-abi.ts            # NFT + marketplace ABIs
-│   │   ├── solana-tx.ts          # Sign/send helpers
-│   │   └── utils.ts              # cn()
-│   └── hooks/
-│       └── useUmi.ts             # umi instance for the browser
+│   │   └── Providers.tsx         # wagmi + wallet-adapter + query
+│   └── lib/
+│       ├── api.ts                # API client, API_BASE, shared request()
+│       ├── chain-ui.ts           # Chain presentation, price formatting
+│       ├── evm-abi.ts            # NFT + marketplace ABIs
+│       ├── solana-tx.ts          # Sign/send helpers
+│       └── utils.ts              # cn()
+│
+│   Every file above is reachable from main.tsx. The shadcn ui/ directory and a
+│   useUmi hook used to sit here unimported; the browser never builds a
+│   transaction, it signs one the backend serialised.
 │
 ├── workerbackend/src/
 │   ├── index.ts                  # Route table (adminAuth wiring lives here)
