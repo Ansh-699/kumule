@@ -16,7 +16,7 @@ import { getUmi } from './umi'
 import { withPrisma, getConnectionString } from './db'
 import { solanaRpc, isSolanaAddress } from './chains'
 import { verifySolanaTransaction } from './solana'
-import { logSecurityEvent } from './audit'
+import { logSecurityEvent, auditedTransactionData } from './audit'
 
 /** POST /api/solana/burn — build the unsigned burn transaction. */
 export const burnNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
@@ -167,13 +167,14 @@ export const confirmBurn = async (c: Context<{ Bindings: CloudflareBindings }>) 
             const nft = await prisma.nft.findUnique({ where: { assetId }, select: { id: true, name: true } })
             if (!nft) return null
             await prisma.transaction.create({
-                data: {
+                data: await auditedTransactionData({
                     chain: 'SOLANA',
                     kind: 'BURN',
                     status: 'CONFIRMED',
                     txHash: signature,
-                    metadata: { assetId, name: nft.name },
-                },
+                    assetId,
+                    metadata: { name: nft.name },
+                }),
             })
             // Cascades clear listings, likes and sales referencing the asset.
             await prisma.nft.delete({ where: { assetId } })

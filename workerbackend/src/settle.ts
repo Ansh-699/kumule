@@ -23,6 +23,7 @@ import {
     tokenIdFromMintReceipt, listingIdFromReceipt,
 } from './evm'
 import { resolveMetadata } from './metadata'
+import { auditedTransactionData } from './audit'
 
 /**
  * Who owns the asset according to the chain, not according to the caller.
@@ -368,16 +369,18 @@ export const settle = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                 await prisma.transaction.upsert({
                     where: { txHash },
                     update: { status: 'CONFIRMED' },
-                    create: {
+                    create: await auditedTransactionData({
                         chain,
                         kind: 'PURCHASE',
                         status: 'CONFIRMED',
                         walletAddress: ownerAddress,
-                        amount: listing.price,
-                        currency: listing.currency,
+                        // toString(), not the Decimal itself: the checksum is computed over the
+                        // decimal string, and it has to be the same digits that come back out.
+                        amount: listing.price.toString(),
                         txHash,
-                        metadata: { source: 'settle', assetId, seller: listing.sellerAddress },
-                    },
+                        assetId,
+                        metadata: { source: 'settle', seller: listing.sellerAddress },
+                    }),
                 })
             }
 

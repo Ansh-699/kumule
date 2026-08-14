@@ -22,7 +22,7 @@ import { base58 } from '@metaplex-foundation/umi/serializers'
 import { getUmi } from './umi'
 import { withPrisma, getConnectionString, ensureUser } from './db'
 import { solanaRpc, makeAssetId, isSolanaAddress } from './chains'
-import { logSecurityEvent } from './audit'
+import { logSecurityEvent, auditedTransactionData } from './audit'
 import { verifySolanaTransaction } from './solana'
 
 const TIERS = ['GOLD', 'SILVER', 'BRONZE'] as const
@@ -740,20 +740,20 @@ export const claimMedal = async (c: Context<{ Bindings: CloudflareBindings }>) =
                 data: { ownerAddress: wallet },
             })
             await prisma.transaction.create({
-                data: {
+                data: await auditedTransactionData({
                     chain: 'SOLANA',
                     kind: 'MEDAL_CLAIM',
                     status: confirmed ? 'CONFIRMED' : 'PENDING',
                     userId: check.userId,
                     walletAddress: wallet,
                     txHash,
+                    assetId: check.medal.nft!.assetId,
                     metadata: {
                         eventId: check.eventId,
                         medalId: check.medal.id,
                         tier: check.medal.tier,
-                        assetId: check.medal.nft!.assetId,
                     },
-                },
+                }),
             })
         })
 

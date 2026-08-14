@@ -14,8 +14,12 @@
 //
 // Run: npx tsx audit-check.ts
 
-import { checksumTransaction, createTransactionChecksum } from './src/audit'
+import { readFileSync } from 'node:fs'
+import { Prisma } from '@prisma/client'
+import { checksumTransaction, createTransactionChecksum, auditedTransactionData } from './src/audit'
 import { fromBaseUnits } from './src/chains'
+
+const { Decimal } = Prisma
 
 let failures = 0
 const ok = (label: string) => console.log(`  ok   ${label}`)
@@ -112,6 +116,69 @@ const run = async () => {
     const repeat = await writerChecksum(base)
     if (repeat === original) ok('checksum is deterministic across calls')
     else fail('checksum is not deterministic')
+
+    console.log('')
+    console.log('auditedTransactionData rows verify the way the reader reads them:')
+
+    // Amounts as each call site actually spells them, including the ones a caller would not
+    // think twice about. "1.10" is the trap: Postgres stores it as 1.1, so checksumming the
+    // caller's spelling would make the row fail its own verification and report a tamper that
+    // never happened. The helper canonicalises before hashing; this pins that it still does.
+    for (const [amount, stored] of [
+        ['0', '0'], ['1.5', '1.5'], ['1.10', '1.1'], ['0.010', '0.01'],
+        ['2.000000000', '2'], ['0.000000001', '0.000000001'],
+    ] as const) {
+        const data = await auditedTransactionData({
+            chain: 'SOLANA', kind: 'PURCHASE', status: 'CONFIRMED',
+            walletAddress: OWNER, amount, assetId: ASSET,
+        })
+        const meta = data.metadata as Record<string, any>
+        // The Decimal column hands back the canonical form, which is what the reader hashes.
+        const read = await readerChecksum({
+            kind: 'PURCHASE', walletAddress: OWNER, amount: new Decimal(String(data.amount)).toString(),
+            chain: 'SOLANA', metadata: { assetId: meta.assetId, _timestamp: meta._timestamp },
+        })
+        if (read === meta._checksum) ok(`amount "${amount}" (stored ${stored}) verifies`)
+        else fail(`amount "${amount}" does not verify after the Decimal round trip`)
+    }
+
+    // An unpriced row - a burn - must still carry a checksum, or the audit endpoint answers
+    // "missing checksum data" for it exactly as it did before any of this existed.
+    const burnRow = await auditedTransactionData({
+        chain: 'SOLANA', kind: 'BURN', status: 'CONFIRMED', txHash: 'sig', assetId: ASSET,
+    })
+    const burnMeta = burnRow.metadata as Record<string, any>
+    const burnRead = await readerChecksum({
+        kind: 'BURN', walletAddress: null, amount: null, chain: 'SOLANA',
+        metadata: { assetId: burnMeta.assetId, _timestamp: burnMeta._timestamp },
+    })
+    if (burnRead === burnMeta._checksum) ok('a row with no wallet and no amount still verifies')
+    else fail('a row with no wallet and no amount does not verify')
+
+    for (const [chain, currency] of [['SOLANA', 'SOL'], ['ETHEREUM', 'ETH']] as const) {
+        const row = await auditedTransactionData({ chain, kind: 'PURCHASE', status: 'CONFIRMED' })
+        if (row.currency === currency) ok(`${chain} rows are labelled ${currency}`)
+        else fail(`${chain} row currency`, `got ${row.currency}`)
+    }
+
+    console.log('')
+    console.log('every Transaction writer routes through the helper:')
+
+    // The real guard. Six call sites write Transaction rows and only mint.ts used to compute a
+    // checksum, which is why five of the six kinds could never be audited. A seventh writer that
+    // builds its own `data` object would silently reintroduce that, and no behavioural test would
+    // catch it - the row writes fine, it just cannot be verified afterwards.
+    const writers = ['mint', 'escrow', 'transfer', 'burn', 'medals', 'settle']
+    for (const file of writers) {
+        // .pathname rather than the URL itself: worker-configuration.d.ts declares a global URL
+        // that is not structurally Node's, so readFileSync will not take one.
+        const src = readFileSync(new URL(`./src/${file}.ts`, import.meta.url).pathname, 'utf8')
+        const creates = src.match(/prisma\.transaction\.(create|upsert)\s*\(\s*{/g)?.length ?? 0
+        const audited = src.match(/auditedTransactionData\(/g)?.length ?? 0
+        if (creates === 0) fail(`${file}.ts no longer writes Transaction rows`, 'update this list')
+        else if (audited >= creates) ok(`${file}.ts: ${creates} write(s), all through auditedTransactionData`)
+        else fail(`${file}.ts writes ${creates} Transaction row(s) but only ${audited} carry a checksum`)
+    }
 
     console.log('')
     if (failures) {

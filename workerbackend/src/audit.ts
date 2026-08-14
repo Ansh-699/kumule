@@ -7,6 +7,7 @@
  * an Nft row, so an asset reference lives in metadata.assetId.
  */
 
+import { Prisma } from '@prisma/client'
 import { withPrisma } from './db'
 import { Chain, CHAIN_CONFIG } from './chains'
 
@@ -94,85 +95,73 @@ export function logAudit(entry: AuditLogEntry): void {
     else console.error('[AUDIT:ERROR]', JSON.stringify(logData))
 }
 
+/** What a caller knows about a transaction. Everything else is derived. */
+export type AuditedTransaction = {
+    chain: Chain
+    kind: string
+    status: string
+    userId?: string | null
+    walletAddress?: string | null
+    /** Decimal string. Kept as a string end to end so no float touches money. */
+    amount?: string | null
+    txHash?: string | null
+    assetId?: string | null
+    metadata?: Record<string, any>
+}
+
 /**
- * Write a Transaction row with an integrity checksum in its metadata.
+ * Build the `data` for a Transaction row with its integrity checksum already in metadata.
  *
- * A failure here is logged but never thrown: audit bookkeeping must not roll back the
- * on-chain action it is describing, which has already happened.
+ * Every writer goes through this. `verifyTransactionChecksum` recomputes the checksum from the
+ * stored row, so a row written without one can only ever answer "Transaction missing checksum
+ * data" - and only mint.ts wrote one, which left `GET /api/admin/audit/:identifier` useless for
+ * purchases, transfers, burns, medal claims and settlements: five of the six kinds this
+ * marketplace records.
+ *
+ * It returns the row rather than writing it because every caller is already inside a
+ * `withPrisma` block, usually alongside the writes it has to stay consistent with. Opening a
+ * second connection to append the audit row would put it outside that transaction.
  */
-export async function recordAuditedTransaction(
-    connectionString: string,
-    params: {
-        chain: Chain
-        kind: string
-        userId?: string | null
-        walletAddress: string
-        /** Decimal string. Kept as a string end to end so no float touches money. */
-        amount?: string
-        assetId?: string | null
-        txHash?: string | null
-        status?: string
-        metadata?: Record<string, any>
-    }
-): Promise<{ success: boolean; checksum: string }> {
+export const auditedTransactionData = async (
+    tx: AuditedTransaction
+): Promise<Prisma.TransactionUncheckedCreateInput> => {
     const timestamp = Date.now()
+    // Canonicalised through Decimal before it is hashed, because that is the form it comes back
+    // in: Postgres stores 1.10 as 1.1, so checksumming the caller's spelling would make the row
+    // fail its own verification and report a tamper that never happened.
+    const amount = tx.amount == null ? null : new Prisma.Decimal(tx.amount).toString()
+    const assetId = tx.assetId ?? null
+    const walletAddress = tx.walletAddress ?? null
+
     const checksum = await checksumTransaction({
-        kind: params.kind,
-        walletAddress: params.walletAddress,
-        amount: params.amount ?? null,
-        chain: params.chain,
-        assetId: params.assetId,
+        kind: tx.kind,
+        walletAddress,
+        amount,
+        chain: tx.chain,
+        assetId,
         timestamp,
     })
 
-    const auditMetadata = {
-        ...params.metadata,
-        assetId: params.assetId ?? null,
-        _checksum: checksum,
-        _timestamp: timestamp,
-        _version: '2.0',
-    }
-
-    try {
-        await withPrisma(connectionString, async (prisma) => {
-            await prisma.transaction.create({
-                data: {
-                    chain: params.chain,
-                    kind: params.kind,
-                    status: params.status ?? 'CONFIRMED',
-                    userId: params.userId ?? null,
-                    walletAddress: params.walletAddress,
-                    amount: params.amount ?? null,
-                    currency: CHAIN_CONFIG[params.chain].currency,
-                    txHash: params.txHash ?? null,
-                    metadata: auditMetadata,
-                },
-            })
-        })
-
-        logAudit({
-            action: params.kind,
-            actor: params.walletAddress,
-            target: params.assetId ?? undefined,
-            transactionHash: params.txHash ?? undefined,
-            checksum,
-            metadata: params.metadata,
-            timestamp: new Date(timestamp),
-            success: true,
-        })
-        return { success: true, checksum }
-    } catch (error) {
-        logAudit({
-            action: params.kind,
-            actor: params.walletAddress,
-            target: params.assetId ?? undefined,
-            checksum,
-            metadata: params.metadata,
-            timestamp: new Date(timestamp),
-            success: false,
-            errorMessage: error instanceof Error ? error.message : String(error),
-        })
-        return { success: false, checksum }
+    return {
+        chain: tx.chain,
+        kind: tx.kind,
+        status: tx.status,
+        userId: tx.userId ?? null,
+        walletAddress,
+        amount,
+        // Derived, never passed in: the currency of a row is a fact about its chain, and letting
+        // call sites spell it out is how a SOL row ends up labelled ETH.
+        currency: CHAIN_CONFIG[tx.chain].currency,
+        txHash: tx.txHash ?? null,
+        metadata: {
+            ...tx.metadata,
+            // verifyTransactionChecksum reads the asset back out of metadata, so this key is
+            // part of the checksum contract rather than decoration.
+            assetId,
+            _checksum: checksum,
+            _timestamp: timestamp,
+            _version: '2.0',
+        },
     }
 }
 

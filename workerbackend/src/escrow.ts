@@ -17,7 +17,7 @@ import { fetchAssetV1, getAssetV1GpaBuilder } from '@metaplex-foundation/mpl-cor
 import { withPrisma, getConnectionString, ensureUser } from './db'
 import { fromBaseUnits, toBaseUnits } from './chains'
 import { verifySolanaTransaction } from './solana'
-import { logBlockchainTransaction, logAudit } from './audit'
+import { logBlockchainTransaction, logAudit, auditedTransactionData } from './audit'
 
 // Lazy initialization to avoid module-level PublicKey creation issues
 // Using the deployed escrow program ID (this is the actual deployed program on devnet)
@@ -707,23 +707,22 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                     // is returned unsigned, so nothing here proves settlement yet - the
                     // indexer flips this to CONFIRMED and writes the Sale row.
                     await prisma.transaction.create({
-                        data: {
+                        data: await auditedTransactionData({
                             chain: 'SOLANA',
                             kind: 'PURCHASE',
                             status: 'PENDING',
                             userId: buyerUserId,
                             walletAddress: buyer,
                             amount: priceSol,
-                            currency: 'SOL',
+                            assetId,
                             metadata: {
                                 source: 'escrow_purchase',
-                                assetId,
                                 nftRowId: nft?.id ?? null,
                                 seller,
                                 price: priceSol,
                                 escrowPda: escrowPDA.toBase58(),
                             },
-                        },
+                        }),
                     })
                     console.log('Buy DB: transaction recorded (PENDING)')
                 })

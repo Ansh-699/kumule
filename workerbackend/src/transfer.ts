@@ -3,6 +3,7 @@ import { getUmi } from './umi'
 import { createNoopSigner, publicKey, signerIdentity } from '@metaplex-foundation/umi'
 import { transferV1 } from '@metaplex-foundation/mpl-core'
 import { withPrisma, getConnectionString, ensureUser } from './db'
+import { auditedTransactionData } from './audit'
 
 export const transferNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     try {
@@ -61,7 +62,7 @@ export const transferNft = async (c: Context<{ Bindings: CloudflareBindings }>) 
                         const nft = await prisma.nft.findUnique({ where: { assetId } })
 
                         await prisma.transaction.create({
-                            data: {
+                            data: await auditedTransactionData({
                                 chain: 'SOLANA',
                                 kind: 'TRANSFER',
                                 status: 'PENDING',
@@ -70,16 +71,15 @@ export const transferNft = async (c: Context<{ Bindings: CloudflareBindings }>) 
                                 // Passed as a string so the Decimal column is built from exact
                                 // digits rather than a float.
                                 amount: String(numericSalePrice),
-                                currency: 'SOL',
+                                assetId,
                                 metadata: {
                                     source: 'nft_transfer',
-                                    assetId,
                                     nftRowId: nft?.id ?? null,
                                     from: currentOwner,
                                     to: newOwner,
                                     salePrice: String(numericSalePrice),
                                 },
-                            },
+                            }),
                         })
                         console.log('Transfer DB: transaction recorded')
                     }
