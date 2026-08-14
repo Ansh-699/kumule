@@ -118,6 +118,9 @@ export const confirmBurn = async (c: Context<{ Bindings: CloudflareBindings }>) 
     if (!assetId || !signature) {
         return c.json({ error: 'assetId and signature are required' }, 400)
     }
+    // Validated here, not just in burnNft: a malformed assetId used to reach publicKey()
+    // inside the try below and come back as a 500 "Failed to record the burn".
+    if (!isSolanaAddress(assetId)) return c.json({ error: 'assetId is not a Solana address' }, 400)
 
     const connectionString = getConnectionString(c.env)
     if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
@@ -135,8 +138,24 @@ export const confirmBurn = async (c: Context<{ Bindings: CloudflareBindings }>) 
     try {
         // The asset must genuinely be gone. burnV1 closes the account, so a successful read
         // means something other than a burn confirmed under this signature.
+        //
+        // This is the only authorization control on this endpoint - confirmBurn takes no owner
+        // and the signature is not checked to be a burn *of this asset* - so it must fail
+        // closed. It used to `.catch(() => null)`, which made an RPC error indistinguishable
+        // from "the account is gone" and deleted the row anyway. With a paid RPC key that 401s
+        // (the failure this codebase already carries fallbacks for elsewhere), any caller could
+        // delete any NFT row by replaying one unrelated confirmed signature.
         const umi = getUmi(solanaRpc(c.env))
-        const stillThere = await umi.rpc.getAccount(publicKey(assetId)).catch(() => null)
+        let stillThere
+        try {
+            stillThere = await umi.rpc.getAccount(publicKey(assetId))
+        } catch (rpcError: any) {
+            console.error('confirmBurn could not read the asset account:', rpcError?.message ?? rpcError)
+            return c.json(
+                { error: 'Could not verify on chain that the asset was burned; nothing was removed' },
+                503
+            )
+        }
         if (stillThere?.exists) {
             return c.json(
                 { error: 'That transaction confirmed but the asset still exists on chain' },
