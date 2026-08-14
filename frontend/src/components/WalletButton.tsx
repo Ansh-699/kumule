@@ -29,7 +29,14 @@ const Row = ({
 
     const copy = async () => {
         if (!address) return
-        await navigator.clipboard.writeText(address)
+        // navigator.clipboard is undefined outside a secure context and writeText can reject
+        // when permission is denied. Unguarded, that became an unhandled rejection from an
+        // onClick handler and the button just did nothing.
+        try {
+            await navigator.clipboard.writeText(address)
+        } catch {
+            return
+        }
         setCopied(true)
         setTimeout(() => setCopied(false), 1500)
     }
