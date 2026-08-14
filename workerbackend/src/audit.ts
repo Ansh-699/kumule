@@ -57,6 +57,37 @@ export async function createTransactionChecksum(params: {
     )
 }
 
+/**
+ * The single definition of what a Transaction row's checksum covers.
+ *
+ * Writer and reader have to feed createTransactionChecksum byte-identical inputs or every
+ * verification fails as a false tamper alarm. Keeping the mapping in one place is the whole
+ * point: when they were written out separately at each call site, they drifted - and because
+ * nothing wrote a checksum at all, `GET /api/admin/audit/:identifier` could only ever answer
+ * "Transaction missing checksum data".
+ *
+ * Takes the row as stored, so the reader can pass a Prisma record almost verbatim.
+ */
+export type ChecksumSubject = {
+    kind: string
+    walletAddress: string | null
+    /** Decimal string as stored. Never a number - see createTransactionChecksum. */
+    amount: string | null
+    chain: Chain
+    assetId?: string | null
+    timestamp: number
+}
+
+export const checksumTransaction = (subject: ChecksumSubject): Promise<string> =>
+    createTransactionChecksum({
+        type: subject.kind,
+        actor: subject.walletAddress || '',
+        amount: subject.amount ?? undefined,
+        chain: subject.chain,
+        assetId: subject.assetId ?? undefined,
+        timestamp: subject.timestamp,
+    })
+
 export function logAudit(entry: AuditLogEntry): void {
     const logData = { ...entry, timestamp: entry.timestamp.toISOString(), _audit: true }
     if (entry.success) console.log('[AUDIT]', JSON.stringify(logData))
@@ -85,12 +116,12 @@ export async function recordAuditedTransaction(
     }
 ): Promise<{ success: boolean; checksum: string }> {
     const timestamp = Date.now()
-    const checksum = await createTransactionChecksum({
-        type: params.kind,
-        actor: params.walletAddress,
-        amount: params.amount,
+    const checksum = await checksumTransaction({
+        kind: params.kind,
+        walletAddress: params.walletAddress,
+        amount: params.amount ?? null,
         chain: params.chain,
-        assetId: params.assetId ?? undefined,
+        assetId: params.assetId,
         timestamp,
     })
 
@@ -172,13 +203,13 @@ export async function verifyTransactionChecksum(
             return { valid: false, message: 'Transaction missing checksum data' }
         }
 
-        const expected = await createTransactionChecksum({
-            type: record.kind,
-            actor: record.walletAddress || '',
+        const expected = await checksumTransaction({
+            kind: record.kind,
+            walletAddress: record.walletAddress,
             // toString() on Decimal, not Number(): the checksum must not depend on float rounding.
-            amount: record.amount?.toString(),
+            amount: record.amount?.toString() ?? null,
             chain: record.chain as Chain,
-            assetId: metadata.assetId ?? undefined,
+            assetId: metadata.assetId,
             timestamp: metadata._timestamp,
         })
 

@@ -9,7 +9,7 @@ import { verifySolPayment } from './solana'
 import { withPrisma, getConnectionString, ensureUser } from './db'
 import { makeAssetId, toBaseUnits, fromBaseUnits, isSolanaAddress } from './chains'
 import { resolveMetadata } from './metadata'
-import { logBlockchainTransaction, logSecurityEvent, recordAuditedTransaction } from './audit'
+import { logBlockchainTransaction, logSecurityEvent, checksumTransaction } from './audit'
 
 export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     const startTime = Date.now()
@@ -256,6 +256,23 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                     }
                     console.log('Mint DB: nft row created', nft.assetId)
 
+                    const amount = feeLamports > 0n ? fromBaseUnits(feeLamports, 'SOLANA') : '0'
+                    const auditTimestamp = Date.now()
+                    // Without these three fields GET /api/admin/audit/:identifier can only ever
+                    // answer "Transaction missing checksum data" - it recomputes the checksum
+                    // from the row and compares it to metadata._checksum, and nothing in the
+                    // codebase was writing one. The inputs here must stay byte-identical to what
+                    // verifyTransactionChecksum recomputes from: kind, walletAddress, amount,
+                    // chain, metadata.assetId, metadata._timestamp.
+                    const checksum = await checksumTransaction({
+                        kind: 'MINT',
+                        walletAddress: owner,
+                        amount,
+                        chain: 'SOLANA',
+                        assetId: nft.assetId,
+                        timestamp: auditTimestamp,
+                    })
+
                     await prisma.transaction.create({
                         data: {
                             chain: 'SOLANA',
@@ -265,7 +282,7 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                             status: 'PENDING',
                             userId,
                             walletAddress: owner,
-                            amount: feeLamports > 0n ? fromBaseUnits(feeLamports, 'SOLANA') : '0',
+                            amount,
                             currency: 'SOL',
                             // The verified fee payment, which doubles as the replay guard: this
                             // column is unique, so the same signature cannot fund a second mint.
@@ -276,6 +293,9 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                                 nftRowId: nft.id,
                                 paymentMethod: paymentMethod ?? 'self-paid',
                                 mintedAt: new Date().toISOString(),
+                                _checksum: checksum,
+                                _timestamp: auditTimestamp,
+                                _version: '2.0',
                             },
                         },
                     })
