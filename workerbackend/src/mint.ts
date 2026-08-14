@@ -7,7 +7,7 @@ import { base58 } from '@metaplex-foundation/umi/serializers'
 
 import { verifySolPayment } from './solana'
 import { withPrisma, getConnectionString, ensureUser } from './db'
-import { makeAssetId, toBaseUnits, fromBaseUnits } from './chains'
+import { makeAssetId, toBaseUnits, fromBaseUnits, isSolanaAddress } from './chains'
 import { resolveMetadata } from './metadata'
 import { logBlockchainTransaction, logSecurityEvent, recordAuditedTransaction } from './audit'
 
@@ -19,16 +19,21 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         const body = await c.req.json()
         let { uri, name, owner, collection, paymentMethod, feeTxSignature } = body
 
-        console.log('[MINT] Params:', JSON.stringify({ name, owner: owner?.slice(0, 8) + '...', paymentMethod, hasUri: !!uri }))
+        // owner?.slice used to assume owner was a string whenever it was non-nullish; a
+        // non-string owner (e.g. a JSON number) crashed here with a raw 500 before
+        // validation below ever ran.
+        console.log('[MINT] Params:', JSON.stringify({ name, owner: typeof owner === 'string' ? owner.slice(0, 8) + '...' : owner, paymentMethod, hasUri: !!uri }))
 
         if (!uri || !name || !owner) {
             console.log('[MINT] Missing required fields')
             return c.text('Missing required fields: uri, name, owner', 400)
         }
 
-        // Validate owner is a valid Solana public key (32-44 chars, base58)
-        if (typeof owner !== 'string' || owner.length < 32 || owner.length > 44) {
-            return c.text('Invalid owner wallet address. Must be a valid Solana public key (32-44 characters)', 400)
+        // Validate owner is a valid Solana public key (base58, 32-44 chars). A same-length
+        // string with a base58-illegal char (0, O, I, l) used to slip past a bare .length
+        // check and crash later in publicKey(owner) with a raw 500.
+        if (typeof owner !== 'string' || !isSolanaAddress(owner)) {
+            return c.text('Invalid owner wallet address. Must be a valid Solana public key', 400)
         }
 
         // Clean up optional fields - ignore placeholder values from Swagger or invalid types
@@ -53,8 +58,8 @@ export const mintNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         }
 
         // Validate collection if provided
-        if (collection && (collection.length < 32 || collection.length > 44)) {
-            return c.text('Invalid collection address. Must be a valid Solana public key (32-44 characters)', 400)
+        if (collection && !isSolanaAddress(collection)) {
+            return c.text('Invalid collection address. Must be a valid Solana public key', 400)
         }
 
         // Check for duplicate mint attempt using same metadata URI
