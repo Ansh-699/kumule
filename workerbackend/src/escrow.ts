@@ -1,12 +1,16 @@
 import { Context } from 'hono'
 import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js'
-// BN as a default-export destructure, not a named import: @coral-xyz/anchor's CJS build
-// exposes BN via a dynamic Object.defineProperty getter that Node's native ESM/cjs-module-lexer
-// interop cannot statically detect, so `import { BN } from '@coral-xyz/anchor'` throws
-// "does not provide an export named 'BN'" under `npx tsx` (esbuild's bundler interop, used by
-// the deployed worker, has no such problem - this only bites the plain Node ESM loader).
-import anchorPkg, { Program, AnchorProvider } from '@coral-xyz/anchor'
-const { BN } = anchorPkg
+// @coral-xyz/anchor is deliberately not imported here. It was pulled in for a single BN call
+// (serializing the u64 price below) plus Program and AnchorProvider, which were never used at
+// all - and that one import could not be written to satisfy both runtimes at once:
+//
+//   worker bundle (esbuild -> dist/browser/index.js): `export { default as BN } from 'bn.js'`,
+//       a static named export, and NO default export.
+//   local checks (Node ESM -> dist/cjs/index.js): BN behind a dynamic defineProperty getter
+//       that cjs-module-lexer cannot see, so the named import fails to link.
+//
+// So `import { BN }` builds but breaks the checks, and `import default` passes the checks but
+// fails the build. u64ToLeBytes below removes the dilemma and the dependency together.
 import { createNoopSigner, publicKey as umiPublicKey, signerIdentity } from '@metaplex-foundation/umi'
 import { getUmi } from './umi'
 import { fetchAssetV1, getAssetV1GpaBuilder } from '@metaplex-foundation/mpl-core'
@@ -180,6 +184,27 @@ export const INSTRUCTION_DISCRIMINATORS: Record<string, number[]> = {
     cancel_escrow: [156, 203, 54, 179, 38, 72, 33, 21],
     close_escrow: [139, 171, 94, 146, 191, 91, 144, 50],
     admin_resolve: [90, 215, 29, 95, 17, 61, 118, 229],
+}
+
+/**
+ * A u64 as 8 little-endian bytes - the layout `create_escrow` expects for `price`.
+ *
+ * Replaces `new BN(v.toString()).toArray('le', 8)`; see the note at the top of this file for why
+ * anchor's BN is not importable in a form that works in both the worker bundle and the local
+ * checks. This also keeps the value an integer end to end rather than round-tripping it through
+ * a decimal string.
+ *
+ * The range check is not decoration. BN.toArray('le', 8) throws on a value too large for 8
+ * bytes; without an equivalent guard the price would silently wrap to its low 64 bits and the
+ * asset would be listed for an amount nobody chose.
+ */
+export const u64ToLeBytes = (value: bigint): number[] => {
+    if (value < 0n || value > 0xffff_ffff_ffff_ffffn) {
+        throw new Error(`price does not fit in a u64: ${value}`)
+    }
+    const bytes = new Array<number>(8)
+    for (let i = 0; i < 8; i++) bytes[i] = Number((value >> BigInt(8 * i)) & 0xffn)
+    return bytes
 }
 
 /**
@@ -357,10 +382,10 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
             ],
             data: Buffer.from([
                 ...INSTRUCTION_DISCRIMINATORS.create_escrow,
-                // BN from a decimal string, never priceNum * 1e9. That multiplication is a
-                // float: 1.1 * 1e9 is 1100000000.0000002, so the price written on-chain would
+                // From the bigint base-unit value, never priceNum * 1e9. That multiplication is
+                // a float: 1.1 * 1e9 is 1100000000.0000002, so the price written on-chain would
                 // not be the price the seller typed.
-                ...new BN(priceLamports.toString()).toArray('le', 8),
+                ...u64ToLeBytes(priceLamports),
                 0,
             ]),
         })
