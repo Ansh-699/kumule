@@ -5,16 +5,15 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              FRONTEND (React + Vite)                        │
-│                         Cloudflare Workers (frontend.ansht.workers.dev)     │
+│                         Cloudflare Workers (kumele.ansht.workers.dev)       │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  Components:                                                                │
-│  ├── MarketplaceList    - Browse & buy NFTs                                 │
-│  ├── UserNftList        - View owned NFTs, list for sale                    │
-│  ├── NftCreator         - Mint new NFTs                                     │
-│  ├── AlbumPage          - Music album display with track player             │
-│  ├── EventsPage         - Event badges & participation                      │
-│  ├── RewardSystem       - Loyalty rewards                                   │
-│  └── AdminDashboard     - Admin controls                                    │
+│  Pages:                                                                     │
+│  ├── MarketplacePage    - Browse, filter, collection chips                  │
+│  ├── NftDetailPage      - List / buy / cancel / burn, then settle           │
+│  ├── CollectionsPage    - Collections derived from NFT groupings            │
+│  ├── CreatePage         - Mint on Solana or Base Sepolia                    │
+│  ├── EventsPage         - Events, points, medal claims                      │
+│  └── AdminPage          - Admin dashboard (needs X-Admin-API-Key)           │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       │ HTTPS
@@ -31,16 +30,19 @@
 │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘         │
 │                                                                             │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │  event.ts   │  │  reward.ts  │  │  audit.ts   │  │ payment.ts  │         │
-│  │ Event Mgmt  │  │ Loyalty     │  │ Security    │  │ Coinbase    │         │
-│  │             │  │ Rewards     │  │ Logging     │  │ Commerce    │         │
+│  │  medals.ts  │  │  settle.ts  │  │  audit.ts   │  │  admin.ts   │         │
+│  │ Events +    │  │ Post-buy    │  │ Security    │  │ adminAuth + │         │
+│  │ Medals      │  │ settlement  │  │ Logging     │  │ Dashboard   │         │
 │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘         │
 │                                                                             │
-│  ┌─────────────┐  ┌─────────────┐                                           │
-│  │   db.ts     │  │  webhook.ts │   Shared Helpers:                         │
-│  │ Prisma +    │  │ Payment     │   - ensureUserExists()                    │
-│  │ Neon        │  │ Webhooks    │   - withPrisma()                          │
-│  └─────────────┘  └─────────────┘   - getConnectionString()                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                          │
+│  │   db.ts     │  │  chains.ts  │  │  burn.ts    │  Shared Helpers:         │
+│  │ Prisma +    │  │ Chain cfg + │  │ Two-step    │  - ensureUser()          │
+│  │ Neon        │  │ money units │  │ burn        │  - withPrisma()          │
+│  └─────────────┘  └─────────────┘  └─────────────┘  - getConnectionString() │
+│                                                                             │
+│  Reads: nfts.ts  evm.ts  solana.ts  umi.ts  metadata.ts  transfer.ts        │
+│         searchnftbyasset.ts  searchnftbyowner.ts  openapi.ts               │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
           │                    │                         │
@@ -57,8 +59,8 @@
 │ Albums          │  │                 │  │  CoREENxT6tW1HoK8y...           │
 │ Tracks          │  │                 │  │                                 │
 │ Events          │  │                 │  │  System Program                 │
-│ Escrows         │  │                 │  │  11111111111111111              │
-│ Disputes        │  │                 │  │                                 │
+│ Listings        │  │                 │  │  11111111111111111              │
+│ Sales           │  │                 │  │                                 │
 └─────────────────┘  └─────────────────┘  └─────────────────────────────────┘
 ```
 
@@ -134,42 +136,35 @@ Buyer                   Frontend                  Backend                 Solana
 
 ## Database Schema
 
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│     User     │     │    Wallet    │     │     NFT      │
-├──────────────┤     ├──────────────┤     ├──────────────┤
-│ id           │◄───┐│ id           │     │ id           │
-│ createdAt    │    ││ walletAddress│     │ nftId        │
-│ updatedAt    │    ││ walletType   │     │ name         │
-└──────────────┘    ││ userId ──────┼────►│ metadataUri  │
-       │            │└──────────────┘     │ walletId ────┼──►
-       │            │                     └──────────────┘
-       ▼            │
-┌──────────────┐    │     ┌──────────────┐
-│ Transaction  │    │     │    Album     │
-├──────────────┤    │     ├──────────────┤
-│ transactionId│    │     │ id           │
-│ userId ──────┼────┘     │ creatorId ───┼──►
-│ amount       │          │ name         │
-│ nftId        │          │ artist       │
-│ txHash       │          │ coverUrl     │
-│ status       │          │ price        │
-└──────────────┘          │ nftAsset     │
-                          └──────────────┘
-       │                         │
-       ▼                         ▼
-┌──────────────┐          ┌──────────────┐
-│    Escrow    │          │    Track     │
-├──────────────┤          ├──────────────┤
-│ id           │          │ id           │
-│ userId       │          │ albumId ─────┼──►
-│ nftId        │          │ title        │
-│ amount       │          │ audioUrl     │
-│ status       │          │ duration     │
-└──────────────┘          │ trackNumber  │
-                          │ integrityHash│
-                          └──────────────┘
-```
+The schema itself is the source of truth: `workerbackend/prisma/schema.prisma`.
+Fourteen models — `User`, `Wallet`, `Collection`, `Nft`, `Listing`, `Sale`,
+`Like`, `Event`, `EventMedal`, `EventParticipant`, `MedalClaim`, `Album`,
+`Track`, `Transaction`.
+
+The shape that matters, and that the v1 diagram this section used to hold got
+wrong in every particular:
+
+- **`Nft.assetId` is the canonical key**, unique across both chains. A bare mint
+  address on Solana; `<contract>:<tokenId>`, lowercased, on EVM. Built only by
+  `makeAssetId()` in `workerbackend/src/chains.ts` — never assembled ad hoc.
+- **Ownership is an address, not a join.** `Nft.ownerAddress` holds it directly;
+  there is no NFT→Wallet foreign key. `Wallet` rows exist to group addresses
+  under a `User`, not to own assets.
+- **There is no `Escrow` model and no `Dispute` model.** Escrow folded into
+  `Listing`, which carries `escrowPda`, `listTxHash` and `closeTxHash` alongside
+  `status` (`ACTIVE` | `SOLD` | `CANCELLED`).
+- **Money is `Decimal(38, 18)`, never a float.** `Listing.price`, `Sale.price`
+  and `Transaction.amount`. It is read back with `.toString()` and converted only
+  through `toBaseUnits()` / `fromBaseUnits()`; `fromBaseUnits` emits the
+  canonical trailing-zero-stripped form, which is what lets an audit checksum
+  survive the database round trip.
+- **`Transaction` was renamed out of v1:** `transactionId` → `txHash` (unique, the
+  natural on-chain key and the mint-fee replay guard), `transactionType` → `kind`,
+  `network` → `chain`. Its `nftId` column is gone; an asset reference lives in
+  `metadata.assetId`. `metadata` is real `Json`, not a stringified blob.
+- **Chain is an enum on nearly every table** (`SOLANA` | `ETHEREUM`), because
+  "which chain is this actually used on" is the question the admin dashboard
+  exists to answer.
 
 ---
 
@@ -182,25 +177,45 @@ Buyer                   Frontend                  Backend                 Solana
 │                    AUDIT SYSTEM (audit.ts)                  │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  1. CHECKSUM GENERATION                                     │
-│     ┌─────────────────────────────────────────────────┐     │
-│     │ SHA-256({type, actor, amount, timestamp})       │     │
-│     │ → Stored in transaction.metadata._checksum      │     │
-│     └─────────────────────────────────────────────────┘     │
+│  1. CHECKSUM over the fields that define a transaction      │
+│     ┌───────────────────────────────────────────────┐       │
+│     │ SHA-256 over, in this order:                  │       │
+│     │   type, actor, target, amount, chain,         │       │
+│     │   assetId, timestamp                          │       │
+│     │ (target is in the signed set but unused)      │       │
+│     │                                               │       │
+│     │ amount is a decimal STRING, never a number.   │       │
+│     │ A float would make the checksum depend on     │       │
+│     │ IEEE-754 rounding.                            │       │
+│     │                                               │       │
+│     │ One mapping, checksumTransaction(), serves    │       │
+│     │ both the writer and the reader. If they       │       │
+│     │ disagree by one field, every verification     │       │
+│     │ becomes a false tamper alarm.                 │       │
+│     │                                               │       │
+│     │ -> transaction.metadata._checksum             │       │
+│     └───────────────────────────────────────────────┘       │
 │                                                             │
-│  2. VERIFICATION ENDPOINT                                   │
-│     GET /api/audit/verify/:transactionId                    │
-│     → Recalculates checksum, compares with stored value     │
+│     Written by mint.ts at insert time. Before Aug 2026      │
+│     nothing wrote it at all, so verification always         │
+│     answered "missing checksum data".                       │
 │                                                             │
-│  3. SECURITY EVENT LOGGING                                  │
+│  2. VERIFICATION ENDPOINT (adminAuth required)              │
+│     GET /api/admin/audit/:identifier                        │
+│     identifier is a txHash or a row id                      │
+│     -> recomputes the checksum, compares with stored        │
+│                                                             │
+│  3. SECURITY EVENT LOGGING (logSecurityEvent)               │
 │     - duplicate_mint_attempt                                │
 │     - invalid_signature                                     │
 │     - rate_limit_exceeded                                   │
 │     - unauthorized_access                                   │
+│     - suspicious_activity                                   │
 │                                                             │
 │  4. BLOCKCHAIN TRANSACTION LOGGING                          │
-│     - All mint/list/buy/cancel operations logged            │
-│     - Success/failure tracking with error messages          │
+│     - mint/list/buy/cancel logged via                       │
+│       logBlockchainTransaction()                            │
+│     - success/failure tracking with error messages          │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -208,7 +223,7 @@ Buyer                   Frontend                  Backend                 Solana
 ### Duplicate Mint Prevention
 
 ```
-POST /mint
+POST /api/solana/mint
     │
     ▼
 ┌─────────────────────────┐
@@ -226,91 +241,107 @@ POST /mint
 
 ## API Route Map
 
-```
-/                              GET    Search NFT by asset
-/owner                         GET    Search NFTs by owner wallet
-/listings                      GET    Get all marketplace listings
-/mint                          POST   Mint new NFT
-/list                          POST   List NFT for sale
-/buy                           POST   Buy listed NFT
-/cancel                        POST   Cancel listing
-/health                        GET    Health check
+The authoritative route list is the OpenAPI document in
+`workerbackend/src/openapi.ts` (`openAPISpec`), served as JSON at
+`GET /openapi.json`.
 
-/api/albums                    GET    List albums
-/api/albums                    POST   Create album
-/api/albums/:id                GET    Get album with tracks
-/api/albums/:id                PUT    Update album
-/api/albums/:id                DELETE Delete album
-/api/albums/:id/tracks         POST   Add track
-/api/albums/:id/tracks/:tid    PUT    Update track
-/api/albums/:id/tracks/:tid    DELETE Delete track
-/api/albums/:id/tracks/:tid/metadata  GET  Generate NFT metadata
+It is not hand-maintained prose: `workerbackend/openapi-check.ts` compares the
+document against the real route table exported from `index.ts` and fails when
+they drift, so a route added without documentation breaks the check. Earlier
+revisions of this section listed routes by hand and drifted badly - it still
+advertised `/api/payment/*` (Coinbase Commerce, shut down 2026-03-31),
+`/api/disputes/*` and `/api/rewards/*`, none of which exist in v2.
 
-/api/upload/image              POST   Upload image to R2
-/api/upload/audio              POST   Upload audio to R2
-/api/upload/metadata           POST   Upload JSON metadata to R2
-/cdn/images/:filename          GET    Serve image
-/cdn/audio/:filename           GET    Stream audio (range support)
-/cdn/metadata/:filename        GET    Serve metadata JSON
+Which routes require the `X-Admin-API-Key` header is decided in one place, the
+route table in `workerbackend/src/index.ts`, and pinned by
+`workerbackend/auth-parity-check.ts`.
 
-/api/events                    GET    List events
-/api/events                    POST   Create event
-/api/events/:id/join           POST   Join event
-
-/api/payment/create            POST   Create Coinbase charge
-/api/payment/status/:id        GET    Check payment status
-/api/payments/webhook          POST   Payment webhook handler
-
-/api/disputes                  GET    List disputes
-/api/disputes                  POST   Create dispute
-/api/disputes/:id/resolve      POST   Resolve dispute
-
-/api/rewards/account           GET    Get reward account
-/api/rewards/claim             POST   Claim reward NFT
-
-/api/admin/dashboard           GET    Admin dashboard (auth required)
-/api/audit/verify/:txId        GET    Verify transaction checksum
-```
-
----
 
 ## File Structure
 
 ```
-nftmarketplace/
+kumule-v2/
 ├── frontend/src/
+│   ├── pages/
+│   │   ├── MarketplacePage.tsx   # Grid, filters, collection chips
+│   │   ├── NftDetailPage.tsx     # Detail, list/buy/cancel/burn, settle
+│   │   ├── CollectionsPage.tsx   # Collections derived from NFT groupings
+│   │   ├── CreatePage.tsx        # Mint on either chain
+│   │   ├── EventsPage.tsx        # Events and medal claims
+│   │   └── AdminPage.tsx         # Admin dashboard (tabbed)
 │   ├── components/
-│   │   ├── MarketplaceList.tsx   # NFT marketplace grid
-│   │   ├── UserNftList.tsx       # User's owned NFTs
-│   │   ├── NftCard.tsx           # NFT display card with badges
-│   │   ├── NftCreator.tsx        # Mint new NFTs
-│   │   ├── AlbumPage.tsx         # Album display with player
-│   │   ├── EventsPage.tsx        # Event badges
-│   │   └── AdminDashboard.tsx    # Admin panel
-│   └── services/
-│       └── api.ts                # API client functions
+│   │   ├── NftCard.tsx           # Card with chain badge and hover glow
+│   │   ├── FilterSidebar.tsx     # Chain/category/price/status filters
+│   │   ├── WalletButton.tsx      # Dual-chain connect (Solana + EVM)
+│   │   ├── ChainBadge.tsx        # Chain mark and badge
+│   │   ├── ConnectForChain.tsx   # Per-chain connect prompt
+│   │   ├── LikeButton.tsx        # Favorite toggle
+│   │   ├── Layout.tsx            # Shell and nav
+│   │   ├── Providers.tsx         # wagmi + wallet-adapter + query
+│   │   └── ui/                   # shadcn primitives
+│   ├── lib/
+│   │   ├── api.ts                # API client, API_BASE, shared request()
+│   │   ├── chain-ui.ts           # Chain presentation, price formatting
+│   │   ├── evm-abi.ts            # NFT + marketplace ABIs
+│   │   ├── solana-tx.ts          # Sign/send helpers
+│   │   └── utils.ts              # cn()
+│   └── hooks/
+│       └── useUmi.ts             # umi instance for the browser
 │
 ├── workerbackend/src/
-│   ├── index.ts                  # Route registration
-│   ├── db.ts                     # Prisma helpers
-│   ├── mint.ts                   # NFT minting
-│   ├── escrow.ts                 # List/buy/cancel
+│   ├── index.ts                  # Route table (adminAuth wiring lives here)
+│   ├── db.ts                     # Prisma + Neon helpers, withPrisma
+│   ├── chains.ts                 # Chain config, assetIds, base-unit money
+│   ├── nfts.ts                   # Marketplace read API, collections
+│   ├── mint.ts                   # Solana minting + fee verification
+│   ├── escrow.ts                 # Solana list/buy/cancel/sync
+│   ├── settle.ts                 # Post-purchase settlement, EVM indexing
+│   ├── transfer.ts               # Direct transfers
+│   ├── burn.ts                   # Two-step burn
+│   ├── medals.ts                 # Events, medal mint and claim
+│   ├── admin.ts                  # adminAuth + admin dashboard API
+│   ├── audit.ts                  # Audit log and transaction checksums
+│   ├── evm.ts                    # Base Sepolia reads (viem)
+│   ├── solana.ts                 # Solana JSON-RPC, payment verification
+│   ├── umi.ts                    # umi factory ('confirmed' commitment)
+│   ├── metadata.ts               # Metadata + image resolution
 │   ├── album.ts                  # Music albums
-│   ├── upload.ts                 # R2 file uploads
-│   ├── audit.ts                  # Security logging
-│   ├── event.ts                  # Event management
-│   ├── reward.ts                 # Loyalty system
-│   ├── payment.ts                # Coinbase integration
-│   └── webhook.ts                # Payment webhooks
+│   ├── upload.ts                 # R2 uploads and CDN serving
+│   ├── searchnftbyasset.ts       # Lookup one asset on chain
+│   ├── searchnftbyowner.ts       # Lookup a wallet's assets on chain
+│   └── openapi.ts                # OpenAPI document (drift-guarded)
 │
-├── programs/
-│   ├── nftmarketplace/           # Main escrow program
-│   ├── event-escrow/             # Event escrow program
-│   └── reward-system/            # Reward program
+├── workerbackend/prisma/
+│   └── schema.prisma             # Database schema
 │
-└── prisma/
-    └── schema.prisma             # Database schema
+├── programs/nftmarketplace/      # LIVE Anchor escrow program - see below
+├── tests/                        # Anchor + e2e tests for that program
+├── migrations/                   # `anchor migrate` deploy entry point
+├── Anchor.toml                   # Globs into tests/ ; do not treat as v1
+│
+└── contracts-evm/                # Foundry: Base Sepolia NFT + marketplace
 ```
+
+### `programs/`, `tests/`, `migrations/` and `Anchor.toml` are live
+
+These four read like v1 leftovers because nothing references them from
+TypeScript, and two separate analysis passes misclassified them as dead on
+exactly that basis. They are wired by convention, not by import:
+
+- `programs/nftmarketplace/src/lib.rs` declares
+  `3ozh4TQJbeyXFUuXsj7fYmHB5aCVkg24cZN5zZmigR44` — the escrow program every
+  Solana list, buy and cancel actually runs through. `workerbackend/src/escrow.ts`
+  builds raw instructions against that id.
+- `Anchor.toml` globs its test command into root `tests/`, which holds the only
+  test suite that program has.
+- `migrations/` is Anchor's `anchor migrate` entry point for the same program.
+
+Deleting any of them removes the safety net for the contract that physically
+holds users' assets, and nothing downstream would fail loudly.
+
+The `event-escrow` and `reward-system` programs listed in earlier revisions of
+this document never existed in v2; medals move by a vault-signed `transferV1`,
+not by an on-chain program.
 
 ---
 
@@ -325,15 +356,15 @@ nftmarketplace/
 │  │    Frontend      │      │    Backend       │             │
 │  │    Worker        │      │    Worker        │             │
 │  │                  │      │                  │             │
-│  │ frontend.ansht.  │◄────►│  (API Worker)    │             │
-│  │ workers.dev      │      │                  │             │
+│  │ kumele.ansht.    │◄────►│ kumele-backend   │             │
+│  │ workers.dev      │      │ .ansht.workers.  │             │
 │  └──────────────────┘      └──────────────────┘             │
 │           │                         │                       │
 │           │                         │                       │
 │           ▼                         ▼                       │
 │  ┌──────────────────┐      ┌──────────────────┐             │
-│  │   R2 Bucket      │      │   Hyperdrive     │             │
-│  │   (nftimages)    │      │   (DB Proxy)     │             │
+│  │   R2 Bucket      │      │   Neon adapter   │             │
+│  │   (nftimages)    │      │   (serverless)   │             │
 │  └──────────────────┘      └──────────────────┘             │
 │                                     │                       │
 └─────────────────────────────────────│───────────────────────┘
