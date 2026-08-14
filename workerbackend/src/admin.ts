@@ -487,11 +487,23 @@ export const indexEvmTokens = async (c: Context<{ Bindings: CloudflareBindings }
     const connectionString = getConnectionString(c.env)
     if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
 
+    // Validated before the contract is read, not after: BigInt() throws a SyntaxError on
+    // anything that is not an integer literal ("abc", "1.5", "0x10"), and this runs outside any
+    // try block, so a typo'd ?to= escaped the handler as an unhandled 500 instead of a 400.
+    // Doing it up here also means a malformed request never spends a chain read - and keeps the
+    // guard reachable, since the supply === 0n early return below would otherwise answer 200
+    // before the parameter was ever looked at.
+    // `from` needs no such guard: parseInt yields NaN and `|| 1` catches it.
+    const toParam = c.req.query('to')
+    if (toParam !== undefined && !/^\d+$/.test(toParam)) {
+        return c.json({ error: 'to must be a non-negative integer' }, 400)
+    }
+
     const supply = await totalMinted(c.env)
     if (supply === 0n) return c.json({ success: true, indexed: [], skipped: [], supply: '0' })
 
     const from = BigInt(Math.max(parseInt(c.req.query('from') || '1', 10) || 1, 1))
-    const requestedTo = c.req.query('to') ? BigInt(c.req.query('to')!) : supply
+    const requestedTo = toParam ? BigInt(toParam) : supply
     // Never walk past what exists, and cap the span so a big backfill is paged rather than
     // timing out halfway through with no record of where it stopped.
     const to = requestedTo > supply ? supply : requestedTo
