@@ -54,7 +54,15 @@ const run = async () => {
 
     // These must clear validation. They then fail on the unreachable database, which is fine -
     // anything other than 400 proves the guard did not eat a legitimate filter.
-    for (const qs of ['minPrice=0', 'minPrice=1.5', 'maxPrice=0.000000001', 'minPrice=1&maxPrice=2', '']) {
+    //
+    // ".5" and "5." are in this list deliberately. Prisma.Decimal accepts both, so both worked
+    // before this guard existed; an earlier version of it rejected them, which silently dropped
+    // a filter the user had actually set. Found by typing into the real price field in a browser,
+    // not by any assertion here - hence the assertion here now.
+    for (const qs of [
+        'minPrice=0', 'minPrice=1.5', 'maxPrice=0.000000001', 'minPrice=1&maxPrice=2', '',
+        'minPrice=.5', 'maxPrice=.5', 'minPrice=5.', 'minPrice=.000000001',
+    ]) {
         const res = await call(qs)
         if (res.status === 400) {
             console.log(`  FAIL "${qs}" was wrongly rejected -> 400: ${(await res.text()).slice(0, 120)}`)
@@ -62,6 +70,35 @@ const run = async () => {
         } else {
             console.log(`  ok   "${qs}" clears validation -> ${res.status} (not blocked at 400)`)
         }
+    }
+
+    console.log('')
+    console.log('validation runs before the database check:')
+
+    // With no DATABASE_URL the handler answers 503. If the price guard sat after that check it
+    // would be unreachable here - which is exactly how it was first written, and why it could
+    // not be verified against a worker that has no database bound.
+    const noDb = (qs: string) => app.request(`/nfts?${qs}`, {}, {})
+
+    for (const [qs, label] of [
+        ['minPrice=.', 'a bare point'],
+        ['maxPrice=abc', 'letters on maxPrice'],
+    ] as const) {
+        const res = await noDb(qs)
+        if (res.status === 400) {
+            console.log(`  ok   ${label} -> 400 even with no DATABASE_URL`)
+        } else {
+            console.log(`  FAIL ${label} -> ${res.status} (expected 400); the guard is behind the 503`)
+            failures++
+        }
+    }
+
+    const wellFormedNoDb = await noDb('minPrice=1.5')
+    if (wellFormedNoDb.status === 503) {
+        console.log('  ok   a valid price still reaches the 503 when no database is configured')
+    } else {
+        console.log(`  FAIL valid price with no DATABASE_URL -> ${wellFormedNoDb.status} (expected 503)`)
+        failures++
     }
 
     console.log('')

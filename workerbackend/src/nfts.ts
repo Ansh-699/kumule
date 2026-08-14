@@ -110,6 +110,28 @@ const serialize = (n: any) => ({
  * 152 broken-image assets from v1 stay recoverable if their metadata host returns.
  */
 export const listNfts = async (c: Context<{ Bindings: CloudflareBindings }>) => {
+    // Price validation runs before the database check, not after. `new Prisma.Decimal()` throws
+    // on anything that is not a decimal literal, and the lines that build the price filter sit
+    // outside the try below, so a bad value escaped the handler as an unhandled 500. A lone "."
+    // reaches here from the marketplace's own price inputs, whose sanitizer strips non-digits
+    // but permits a bare point.
+    //
+    // Ahead of the 503 deliberately: a malformed request is malformed whether or not a database
+    // is configured, and putting it first is what makes the guard reachable - and therefore
+    // testable - in an environment that has no DATABASE_URL.
+    const minPrice = c.req.query('minPrice')
+    const maxPrice = c.req.query('maxPrice')
+    // Accepts every plain decimal Prisma.Decimal already accepted, including ".5" and "5." -
+    // those worked before this guard existed and rejecting them would break a caller for no
+    // reason. Still refuses "." (no digits), "1.2.3", "abc", "-5" and "1e9": exponent and sign
+    // notation are not things a price filter should be guessing at.
+    const isDecimal = (v: string) => /^(\d+(\.\d*)?|\.\d+)$/.test(v)
+    for (const [name, value] of [['minPrice', minPrice], ['maxPrice', maxPrice]] as const) {
+        if (value && !isDecimal(value)) {
+            return c.json({ error: `${name} must be a non-negative decimal amount` }, 400)
+        }
+    }
+
     const connectionString = getConnectionString(c.env)
     if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
 
@@ -132,8 +154,6 @@ export const listNfts = async (c: Context<{ Bindings: CloudflareBindings }>) => 
         : listedParam !== 'false'
     const includeHidden = c.req.query('includeHidden') === 'true'
     const sort = parseSort(c.req.query('sort'))
-    const minPrice = c.req.query('minPrice')
-    const maxPrice = c.req.query('maxPrice')
 
     const where: Prisma.NftWhereInput = {}
     if (chain) where.chain = chain
@@ -163,17 +183,6 @@ export const listNfts = async (c: Context<{ Bindings: CloudflareBindings }>) => 
             { name: { contains: search, mode: 'insensitive' } },
             { description: { contains: search, mode: 'insensitive' } },
         ]
-    }
-
-    // new Prisma.Decimal() throws on anything that is not a decimal literal, and these two lines
-    // sit outside the try below, so a bad value escaped the handler as an unhandled 500 rather
-    // than a 400. A lone "." reaches here from the marketplace's own price inputs, whose
-    // sanitizer strips non-digits but permits a bare point.
-    const isDecimal = (v: string) => /^\d+(\.\d+)?$/.test(v)
-    for (const [name, value] of [['minPrice', minPrice], ['maxPrice', maxPrice]] as const) {
-        if (value && !isDecimal(value)) {
-            return c.json({ error: `${name} must be a non-negative decimal amount` }, 400)
-        }
     }
 
     const priceFilter: Prisma.ListingWhereInput = { status: 'ACTIVE' }
