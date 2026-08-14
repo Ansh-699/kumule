@@ -1,6 +1,12 @@
 import { Context } from 'hono'
 import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js'
-import { BN, Program, AnchorProvider } from '@coral-xyz/anchor'
+// BN as a default-export destructure, not a named import: @coral-xyz/anchor's CJS build
+// exposes BN via a dynamic Object.defineProperty getter that Node's native ESM/cjs-module-lexer
+// interop cannot statically detect, so `import { BN } from '@coral-xyz/anchor'` throws
+// "does not provide an export named 'BN'" under `npx tsx` (esbuild's bundler interop, used by
+// the deployed worker, has no such problem - this only bites the plain Node ESM loader).
+import anchorPkg, { Program, AnchorProvider } from '@coral-xyz/anchor'
+const { BN } = anchorPkg
 import { createNoopSigner, publicKey as umiPublicKey, signerIdentity } from '@metaplex-foundation/umi'
 import { getUmi } from './umi'
 import { fetchAssetV1, getAssetV1GpaBuilder } from '@metaplex-foundation/mpl-core'
@@ -161,42 +167,65 @@ const getIDL = () => ({
     ],
 })
 
+/**
+ * Instruction discriminators keyed by name instead of by position in `getIDL().instructions`.
+ * Byte-identical to the literals inline in `getIDL()` above - reordering that array (an easy
+ * mistake in an unrelated edit) used to silently point every positional call site at the wrong
+ * instruction.
+ */
+export const INSTRUCTION_DISCRIMINATORS: Record<string, number[]> = {
+    create_escrow: [253, 215, 165, 116, 36, 108, 68, 80],
+    deposit_asset: [107, 93, 89, 87, 226, 203, 154, 19],
+    buy_asset: [197, 37, 177, 1, 180, 23, 175, 98],
+    cancel_escrow: [156, 203, 54, 179, 38, 72, 33, 21],
+    close_escrow: [139, 171, 94, 146, 191, 91, 144, 50],
+    admin_resolve: [90, 215, 29, 95, 17, 61, 118, 229],
+}
+
+/**
+ * Every handler in this file hits the same failure mode: a paid RPC key that is missing,
+ * expired, or revoked reads back as a 401/"Invalid API key"/"Unauthorized", and the fix is
+ * always "retry the same call against the public devnet RPC". This used to be eight separate
+ * copies of that catch-and-retry, one of them (syncListing's) missing entirely - a purchase
+ * that already landed on chain could fail to *sync* into the database purely because the paid
+ * RPC key 401'd, which read to the caller as the purchase itself failing.
+ *
+ * `extraPatterns` lets UMI-backed call sites (`fetchAssetV1` throws differently-shaped errors,
+ * e.g. "AccountNotFoundError") keep matching exactly the strings they matched before this was
+ * deduplicated, without loosening the match for call sites that never saw those messages.
+ */
+async function withRpcFallback<T>(
+    primaryUrl: string,
+    attempt: (rpcUrl: string) => Promise<T>,
+    extraPatterns: string[] = [],
+): Promise<T> {
+    try {
+        return await attempt(primaryUrl)
+    } catch (e: any) {
+        const msg = e?.message ?? String(e)
+        const patterns = ['401', 'Invalid API key', 'Unauthorized', ...extraPatterns]
+        if (patterns.some((p) => msg.includes(p))) {
+            return await attempt('https://api.devnet.solana.com')
+        }
+        throw e
+    }
+}
+
 export const getListings = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     try {
         // Use public devnet RPC as fallback if API key is invalid
-        let rpcUrl = c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'
-        const connection = rpcConnection(rpcUrl)
+        const rpcUrl = c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'
 
-
-        let accounts: any[] = []
+        let accounts: any[]
         try {
             console.log('Fetching program accounts for:', getEscrowProgramId().toBase58())
-            accounts = await connection.getProgramAccounts(getEscrowProgramId()) as any[]
+            accounts = await withRpcFallback(rpcUrl, (url) => rpcConnection(url).getProgramAccounts(getEscrowProgramId())) as any[]
             console.log(`Found ${accounts.length} program accounts`)
         } catch (e: any) {
-            console.error('Error fetching program accounts:', e.message)
-            
-            // If API key is invalid, try public RPC as fallback
-            if (e.message?.includes('401') || e.message?.includes('Invalid API key') || e.message?.includes('Unauthorized')) {
-                console.log('API key invalid, trying public devnet RPC for listings...')
-                try {
-                    const publicRpcUrl = 'https://api.devnet.solana.com'
-                    const publicConnection = rpcConnection(publicRpcUrl)
-                    accounts = await publicConnection.getProgramAccounts(getEscrowProgramId()) as any[]
-                    console.log(`Found ${accounts.length} program accounts using public RPC`)
-                } catch (fallbackError: any) {
-                    console.error('Fallback RPC also failed:', fallbackError.message)
-                    return c.json({ listings: [] })
-                }
-            } else {
-                console.log('Program not deployed or no accounts found, returning empty list')
-                return c.json({ listings: [] })
-            }
+            console.error('Error fetching program accounts (including fallback):', e?.message ?? e)
+            return c.json({ listings: [] })
         }
 
-        // Use the same RPC URL for UMI (with fallback)
-        let umiRpcUrl = rpcUrl
-        const umi = getUmi(umiRpcUrl)
         const listings = []
 
         for (const { pubkey, account } of accounts) {
@@ -207,20 +236,11 @@ export const getListings = async (c: Context<{ Bindings: CloudflareBindings }>) 
                     continue
                 }
 
-                let asset
-                try {
-                    asset = await fetchAssetV1(umi, umiPublicKey(escrowData.asset.toBase58()))
-                } catch (assetError: any) {
-                    // If asset fetch fails with 401, try public RPC
-                    if (assetError.message?.includes('401') || assetError.message?.includes('Invalid API key') || assetError.message?.includes('Unauthorized') || assetError.message?.includes('failed to get info')) {
-                        console.log('Asset fetch failed, trying public RPC...')
-                        umiRpcUrl = 'https://api.devnet.solana.com'
-                        const publicUmi = getUmi(umiRpcUrl)
-                        asset = await fetchAssetV1(publicUmi, umiPublicKey(escrowData.asset.toBase58()))
-                    } else {
-                        throw assetError
-                    }
-                }
+                const asset = await withRpcFallback(
+                    rpcUrl,
+                    (url) => fetchAssetV1(getUmi(url), umiPublicKey(escrowData.asset.toBase58())),
+                    ['failed to get info'],
+                )
 
                 listings.push({
                     escrow: pubkey.toBase58(),
@@ -279,20 +299,11 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
 
         const tx = new Transaction()
 
-        let escrowAccountInfo
-        try {
-            escrowAccountInfo = await connection.getAccountInfo(escrowPDA)
-        } catch (rpcError: any) {
-            // If API key is invalid, try public RPC as fallback
-            if (rpcError.message?.includes('401') || rpcError.message?.includes('Invalid API key') || rpcError.message?.includes('Unauthorized')) {
-                console.log('API key invalid in listNft, trying public devnet RPC...')
-                rpcUrl = 'https://api.devnet.solana.com'
-                connection = rpcConnection(rpcUrl)
-                escrowAccountInfo = await connection.getAccountInfo(escrowPDA)
-            } else {
-                throw rpcError
-            }
-        }
+        const escrowAccountInfo = await withRpcFallback(rpcUrl, async (url) => {
+            rpcUrl = url
+            connection = rpcConnection(url)
+            return connection.getAccountInfo(escrowPDA)
+        })
 
         if (escrowAccountInfo) {
             console.log('Escrow account exists, checking status...')
@@ -314,7 +325,7 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                             { pubkey: sellerPubkey, isSigner: true, isWritable: true },
                             { pubkey: escrowPDA, isSigner: false, isWritable: true },
                         ],
-                        data: Buffer.from(getIDL().instructions[4].discriminator),
+                        data: Buffer.from(INSTRUCTION_DISCRIMINATORS.close_escrow),
                     })
                     tx.add(closeEscrowIx)
                 }
@@ -329,7 +340,7 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                             { pubkey: sellerPubkey, isSigner: true, isWritable: true },
                             { pubkey: escrowPDA, isSigner: false, isWritable: true },
                         ],
-                        data: Buffer.from(getIDL().instructions[4].discriminator),
+                        data: Buffer.from(INSTRUCTION_DISCRIMINATORS.close_escrow),
                     })
                     tx.add(closeEscrowIx)
                 }
@@ -345,7 +356,7 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
                 { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
             ],
             data: Buffer.from([
-                ...getIDL().instructions[0].discriminator,
+                ...INSTRUCTION_DISCRIMINATORS.create_escrow,
                 // BN from a decimal string, never priceNum * 1e9. That multiplication is a
                 // float: 1.1 * 1e9 is 1100000000.0000002, so the price written on-chain would
                 // not be the price the seller typed.
@@ -356,27 +367,16 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
 
         // Use the same RPC URL for UMI (with fallback)
         let umi = getUmi(rpcUrl)
-        let asset
-        try {
-            asset = await fetchAssetV1(umi, umiPublicKey(assetId))
-        } catch (umiError: any) {
-            // If UMI fetch fails with 401, unauthorized, or AccountNotFoundError, try public RPC
-            const errorMsg = umiError.message || String(umiError)
-            if (errorMsg.includes('401') || 
-                errorMsg.includes('Invalid API key') || 
-                errorMsg.includes('Unauthorized') || 
-                errorMsg.includes('failed to get info') ||
-                errorMsg.includes('AccountNotFoundError') ||
-                errorMsg.includes('was not found')) {
-                console.log('UMI fetch failed, trying public RPC for asset fetch...', errorMsg.slice(0, 100))
-                rpcUrl = 'https://api.devnet.solana.com'
-                connection = rpcConnection(rpcUrl)
-                umi = getUmi(rpcUrl)
-                asset = await fetchAssetV1(umi, umiPublicKey(assetId))
-            } else {
-                throw umiError
-            }
-        }
+        const asset = await withRpcFallback(
+            rpcUrl,
+            async (url) => {
+                rpcUrl = url
+                connection = rpcConnection(url)
+                umi = getUmi(url)
+                return fetchAssetV1(umi, umiPublicKey(assetId))
+            },
+            ['failed to get info', 'AccountNotFoundError', 'was not found'],
+        )
 
         const depositAssetKeys = [
             { pubkey: sellerPubkey, isSigner: true, isWritable: true },
@@ -406,27 +406,14 @@ export const listNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         const depositAssetIx = new TransactionInstruction({
             programId: getEscrowProgramId(),
             keys: depositAssetKeys,
-            data: Buffer.from(getIDL().instructions[1].discriminator),
+            data: Buffer.from(INSTRUCTION_DISCRIMINATORS.deposit_asset),
         })
 
-        let blockhash, lastValidBlockHeight
-        try {
-            const latestBlockhash = await connection.getLatestBlockhash()
-            blockhash = latestBlockhash.blockhash
-            lastValidBlockHeight = latestBlockhash.lastValidBlockHeight
-        } catch (rpcError: any) {
-            // If API key is invalid, try public RPC as fallback
-            if (rpcError.message?.includes('401') || rpcError.message?.includes('Invalid API key') || rpcError.message?.includes('Unauthorized')) {
-                console.log('API key invalid when getting blockhash in listNft, using public RPC...')
-                rpcUrl = 'https://api.devnet.solana.com'
-                connection = rpcConnection(rpcUrl)
-                const latestBlockhash = await connection.getLatestBlockhash()
-                blockhash = latestBlockhash.blockhash
-                lastValidBlockHeight = latestBlockhash.lastValidBlockHeight
-            } else {
-                throw rpcError
-            }
-        }
+        const { blockhash, lastValidBlockHeight } = await withRpcFallback(rpcUrl, async (url) => {
+            rpcUrl = url
+            connection = rpcConnection(url)
+            return connection.getLatestBlockhash()
+        })
 
         tx.recentBlockhash = blockhash
         tx.lastValidBlockHeight = lastValidBlockHeight
@@ -514,9 +501,12 @@ export const syncListing = async (c: Context<{ Bindings: CloudflareBindings }>) 
     }
 
     const [escrowPDA] = getEscrowPDA(assetPubkey, sellerPubkey)
-    const connection = rpcConnection(c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com')
+    const rpcUrl = c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'
 
-    const info = await connection.getAccountInfo(escrowPDA)
+    // Same fallback every other handler in this file already has: a paid RPC key that 401s
+    // used to fail this call outright, which read to the caller as the purchase itself
+    // failing even though it had already landed on chain.
+    const info = await withRpcFallback(rpcUrl, (url) => rpcConnection(url).getAccountInfo(escrowPDA))
 
     // 1 = Deposited. Anything else - no account, a closed one, a cancelled one - means the asset
     // is not held for sale, whatever the caller believes.
@@ -612,24 +602,15 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         // Fetch asset with RPC fallback
         let rpcUrl = c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'
         let umi = getUmi(rpcUrl)
-        let asset
-        try {
-            asset = await fetchAssetV1(umi, umiPublicKey(assetId))
-        } catch (umiError: any) {
-            const errorMsg = umiError.message || String(umiError)
-            if (errorMsg.includes('401') || 
-                errorMsg.includes('Invalid API key') || 
-                errorMsg.includes('Unauthorized') || 
-                errorMsg.includes('AccountNotFoundError') ||
-                errorMsg.includes('was not found')) {
-                console.log('Buy: UMI fetch failed, trying public RPC...', errorMsg.slice(0, 100))
-                rpcUrl = 'https://api.devnet.solana.com'
-                umi = getUmi(rpcUrl)
-                asset = await fetchAssetV1(umi, umiPublicKey(assetId))
-            } else {
-                throw umiError
-            }
-        }
+        const asset = await withRpcFallback(
+            rpcUrl,
+            async (url) => {
+                rpcUrl = url
+                umi = getUmi(url)
+                return fetchAssetV1(umi, umiPublicKey(assetId))
+            },
+            ['AccountNotFoundError', 'was not found'],
+        )
 
         const buyAssetKeys = [
             { pubkey: buyerPubkey, isSigner: true, isWritable: true },
@@ -659,7 +640,7 @@ export const buyNft = async (c: Context<{ Bindings: CloudflareBindings }>) => {
         const buyAssetIx = new TransactionInstruction({
             programId: getEscrowProgramId(),
             keys: buyAssetKeys,
-            data: Buffer.from(getIDL().instructions[2].discriminator),
+            data: Buffer.from(INSTRUCTION_DISCRIMINATORS.buy_asset),
         })
 
         const connection = rpcConnection(rpcUrl)
@@ -768,24 +749,15 @@ export const cancelListing = async (c: Context<{ Bindings: CloudflareBindings }>
         // Fetch asset with RPC fallback
         let rpcUrl = c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'
         let umi = getUmi(rpcUrl)
-        let asset
-        try {
-            asset = await fetchAssetV1(umi, umiPublicKey(assetId))
-        } catch (umiError: any) {
-            const errorMsg = umiError.message || String(umiError)
-            if (errorMsg.includes('401') || 
-                errorMsg.includes('Invalid API key') || 
-                errorMsg.includes('Unauthorized') || 
-                errorMsg.includes('AccountNotFoundError') ||
-                errorMsg.includes('was not found')) {
-                console.log('Cancel: UMI fetch failed, trying public RPC...', errorMsg.slice(0, 100))
-                rpcUrl = 'https://api.devnet.solana.com'
-                umi = getUmi(rpcUrl)
-                asset = await fetchAssetV1(umi, umiPublicKey(assetId))
-            } else {
-                throw umiError
-            }
-        }
+        const asset = await withRpcFallback(
+            rpcUrl,
+            async (url) => {
+                rpcUrl = url
+                umi = getUmi(url)
+                return fetchAssetV1(umi, umiPublicKey(assetId))
+            },
+            ['AccountNotFoundError', 'was not found'],
+        )
 
         const cancelEscrowKeys = [
             { pubkey: sellerPubkey, isSigner: true, isWritable: true },
@@ -814,7 +786,7 @@ export const cancelListing = async (c: Context<{ Bindings: CloudflareBindings }>
         const cancelEscrowIx = new TransactionInstruction({
             programId: getEscrowProgramId(),
             keys: cancelEscrowKeys,
-            data: Buffer.from(getIDL().instructions[3].discriminator),
+            data: Buffer.from(INSTRUCTION_DISCRIMINATORS.cancel_escrow),
         })
 
         const connection = rpcConnection(rpcUrl)
@@ -880,24 +852,15 @@ export const adminResolveEscrow = async (c: Context<{ Bindings: CloudflareBindin
         // Fetch asset with RPC fallback
         let rpcUrl = c.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'
         let umi = getUmi(rpcUrl)
-        let asset
-        try {
-            asset = await fetchAssetV1(umi, umiPublicKey(assetId))
-        } catch (umiError: any) {
-            const errorMsg = umiError.message || String(umiError)
-            if (errorMsg.includes('401') || 
-                errorMsg.includes('Invalid API key') || 
-                errorMsg.includes('Unauthorized') || 
-                errorMsg.includes('AccountNotFoundError') ||
-                errorMsg.includes('was not found')) {
-                console.log('AdminResolve: UMI fetch failed, trying public RPC...', errorMsg.slice(0, 100))
-                rpcUrl = 'https://api.devnet.solana.com'
-                umi = getUmi(rpcUrl)
-                asset = await fetchAssetV1(umi, umiPublicKey(assetId))
-            } else {
-                throw umiError
-            }
-        }
+        const asset = await withRpcFallback(
+            rpcUrl,
+            async (url) => {
+                rpcUrl = url
+                umi = getUmi(url)
+                return fetchAssetV1(umi, umiPublicKey(assetId))
+            },
+            ['AccountNotFoundError', 'was not found'],
+        )
 
         const adminResolveKeys = [
             { pubkey: adminPubkey, isSigner: true, isWritable: true },
@@ -927,10 +890,8 @@ export const adminResolveEscrow = async (c: Context<{ Bindings: CloudflareBindin
 
         // Build instruction data: discriminator + refund_buyer (bool = 1 byte)
         const refundBuyerByte = refundBuyer ? 1 : 0
-        const discriminator = getIDL().instructions[5].discriminator
-        const discriminatorArray = Array.isArray(discriminator) ? discriminator : Array.from(discriminator)
         const instructionData = Buffer.concat([
-            Buffer.from(discriminatorArray as number[]) as any,
+            Buffer.from(INSTRUCTION_DISCRIMINATORS.admin_resolve) as any,
             Buffer.from([refundBuyerByte]) as any
         ]) as Buffer
 
