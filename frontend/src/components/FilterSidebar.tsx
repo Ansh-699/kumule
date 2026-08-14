@@ -21,17 +21,28 @@ export const EMPTY_FILTERS: Filters = {
     listedOnly: false,
 }
 
+/**
+ * A half-typed price is not a filter. The input sanitizer permits a bare "." (it strips
+ * non-digits but cannot require a digit), and sending that to the API meant
+ * `new Prisma.Decimal(".")`, which throws - the request came back 500 while the user was
+ * still typing. Only a complete decimal literal is sent.
+ */
+const asDecimalOrUndefined = (value: string): string | undefined => {
+    const v = value.trim()
+    return /^\d+(\.\d+)?$/.test(v) ? v : undefined
+}
+
 export const filtersToQuery = (f: Filters): NftFilters => ({
     chain: f.chain,
     category: f.category,
     // Left as strings all the way to the API: prices are decimal strings end to end.
-    minPrice: f.minPrice.trim() || undefined,
-    maxPrice: f.maxPrice.trim() || undefined,
+    minPrice: asDecimalOrUndefined(f.minPrice),
+    maxPrice: asDecimalOrUndefined(f.maxPrice),
     listedOnly: f.listedOnly || undefined,
 })
 
 export const activeFilterCount = (f: Filters): number =>
-    [f.chain, f.category, f.minPrice.trim() || undefined, f.maxPrice.trim() || undefined, f.listedOnly || undefined]
+    [f.chain, f.category, asDecimalOrUndefined(f.minPrice), asDecimalOrUndefined(f.maxPrice), f.listedOnly || undefined]
         .filter(Boolean).length
 
 const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (

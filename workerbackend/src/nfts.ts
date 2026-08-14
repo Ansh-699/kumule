@@ -165,6 +165,17 @@ export const listNfts = async (c: Context<{ Bindings: CloudflareBindings }>) => 
         ]
     }
 
+    // new Prisma.Decimal() throws on anything that is not a decimal literal, and these two lines
+    // sit outside the try below, so a bad value escaped the handler as an unhandled 500 rather
+    // than a 400. A lone "." reaches here from the marketplace's own price inputs, whose
+    // sanitizer strips non-digits but permits a bare point.
+    const isDecimal = (v: string) => /^\d+(\.\d+)?$/.test(v)
+    for (const [name, value] of [['minPrice', minPrice], ['maxPrice', maxPrice]] as const) {
+        if (value && !isDecimal(value)) {
+            return c.json({ error: `${name} must be a non-negative decimal amount` }, 400)
+        }
+    }
+
     const priceFilter: Prisma.ListingWhereInput = { status: 'ACTIVE' }
     if (minPrice) priceFilter.price = { ...(priceFilter.price as object), gte: new Prisma.Decimal(minPrice) }
     if (maxPrice) priceFilter.price = { ...(priceFilter.price as object), lte: new Prisma.Decimal(maxPrice) }
