@@ -701,14 +701,25 @@ export const claimMedal = async (c: Context<{ Bindings: CloudflareBindings }>) =
             return c.json({ error: 'Medal is no longer held by the vault' }, 409)
         }
 
-        const result = await transferV1(vault.umi, {
+        // sendWithBoundedConfirm, not sendAndConfirm - the same reason mintMedals uses it. umi's
+        // sendAndConfirm blocks on its own retry strategy for longer than Cloudflare's 30 second
+        // request ceiling, so a slow confirmation killed the request *after* the transfer was
+        // already in flight. Nothing below then ran: no claim row, no claimedCount increment, no
+        // owner update. The medal landed in the user's wallet while the database still showed it
+        // in the vault, and every retry hit the "no longer held by the vault" check above, so the
+        // medal was permanently unclaimable and uncounted.
+        const builder = await transferV1(vault.umi, {
             asset: publicKey(mintAddress),
             newOwner: publicKey(wallet),
-        }).sendAndConfirm(vault.umi)
-        const txHash = base58.deserialize(result.signature)[0]
+        })
+        const withBlockhash = await builder.setLatestBlockhash(vault.umi)
+        const signed = await withBlockhash.buildAndSign(vault.umi)
+        const { signature: txHash, confirmed } = await sendWithBoundedConfirm(c.env, vault.umi, signed)
 
-        // Recorded after the transfer confirmed. The unique index on (medalId, userId) is the
-        // real guard against a double claim from concurrent requests.
+        // Recorded whether or not confirmation arrived inside the budget. An unconfirmed transfer
+        // is in flight, not failed, and leaving it unrecorded is what stranded the medal: the
+        // Transaction row carries PENDING so a reconciliation can settle it, and the unique index
+        // on (medalId, userId) is still the real guard against a double claim.
         await withPrisma(connectionString, async (prisma) => {
             await prisma.medalClaim.create({
                 data: {
@@ -732,7 +743,7 @@ export const claimMedal = async (c: Context<{ Bindings: CloudflareBindings }>) =
                 data: {
                     chain: 'SOLANA',
                     kind: 'MEDAL_CLAIM',
-                    status: 'CONFIRMED',
+                    status: confirmed ? 'CONFIRMED' : 'PENDING',
                     userId: check.userId,
                     walletAddress: wallet,
                     txHash,
@@ -748,9 +759,13 @@ export const claimMedal = async (c: Context<{ Bindings: CloudflareBindings }>) =
 
         return c.json({
             success: true,
+            confirmed,
             tier: check.medal.tier,
             assetId: check.medal.nft!.assetId,
             txHash,
+            // `confirmed: false` means the transfer is in flight, not that it failed. Callers must
+            // not retry on it - the claim is already recorded and a retry would be rejected.
+            ...(confirmed ? {} : { note: 'Transfer sent but not yet confirmed; it should land shortly.' }),
             explorerUrl: `https://explorer.solana.com/tx/${txHash}?cluster=devnet`,
         })
     } catch (e: any) {

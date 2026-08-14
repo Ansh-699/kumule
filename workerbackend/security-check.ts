@@ -13,6 +13,9 @@
 // The v1 payment asserts are gone with payment.ts: Coinbase Commerce shut down 2026-03-31 and
 // the mint fee is now an on-chain SOL transfer verified by solana.ts.
 
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Hono } from 'hono'
 import { adminAuth } from './src/admin'
 import { validateTierConfig, medalStatus } from './src/medals'
@@ -130,6 +133,33 @@ eq('last unit is claimable', medalStatus(medal({ supply: 3, claimedCount: 2 }), 
 // Shortfall is reported before any other reason, so the user sees the actionable one.
 eq('shortfall reported over supply', medalStatus(medal({ supply: 1, claimedCount: 1 }), 5, false).reason, 'needs 95 more points')
 eq('zero-threshold medal claimable at zero points', medalStatus(medal({ requiredPoints: 0 }), 0, false).claimable, true)
+
+// Every chain send in medals.ts must go through sendWithBoundedConfirm. umi's sendAndConfirm
+// blocks on its own retry strategy past Cloudflare's 30 second request ceiling, and both of this
+// file's sends happen *after* value has already moved: claimMedal's transfer killed the request
+// mid-flight, so the claim row, the claimedCount increment and the owner update never ran - the
+// medal reached the user's wallet while the database still showed it in the vault, and the
+// vault-ownership precheck then rejected every retry, stranding the medal permanently.
+//
+// A source assert rather than a behavioral one: reproducing a 30 second Worker timeout offline
+// is not practical, and the property that matters is which sender the code calls.
+// fileURLToPath on the raw string, not `new URL(...)`: the worker types in scope here define
+// their own URL, which is not assignable to node:fs's PathOrFileDescriptor.
+const medalsSource = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), 'src', 'medals.ts'),
+    'utf8',
+)
+const liveSendAndConfirm = medalsSource
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('*') && !line.trim().startsWith('//'))
+    .filter((line) => line.includes('.sendAndConfirm('))
+
+eq('medals.ts makes no unbounded sendAndConfirm call', liveSendAndConfirm.length, 0)
+eq(
+    'medals.ts routes sends through sendWithBoundedConfirm',
+    medalsSource.includes('sendWithBoundedConfirm(c.env, vault.umi'),
+    true,
+)
 
 console.log(failures === 0 ? '\nall passed' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)
