@@ -5,7 +5,7 @@
 // pinned rather than eyeballed.
 
 import {
-    parseChain, isChain, chainFromAddress, isValidAddress, normalizeAddress,
+    parseChain, isChain, chainFromAddress, isValidAddress, isSolanaAddress, normalizeAddress,
     makeAssetId, parseAssetId, fromBaseUnits, toBaseUnits, CHAIN_CONFIG,
 } from './src/chains'
 
@@ -43,6 +43,19 @@ eq('base58 excludes 0OIl', chainFromAddress('0OIl0OIl0OIl0OIl0OIl0OIl0OIl0OIl'),
 eq('evm valid for ETHEREUM', isValidAddress('ETHEREUM', EVM_NFT), true)
 eq('evm invalid for SOLANA', isValidAddress('SOLANA', EVM_NFT), false)
 eq('short hex rejected', isValidAddress('ETHEREUM', '0xabc'), false)
+
+// The character window is not the check. '1' is a zero byte in base58, so 43 of them is
+// well-formed base58 inside the allowed length and decodes to 43 bytes, not 32. Strings like
+// this used to pass validation and then throw inside publicKey(), which turned a malformed
+// request into a 500 - or, once confirmBurn began failing closed, a 503 telling the caller to
+// retry something that can never succeed.
+eq('43 zero bytes is not an address', isSolanaAddress('1'.repeat(43)), false)
+eq('32 zero bytes is the system program', isSolanaAddress('1'.repeat(32)), true)
+eq('31 bytes rejected', isSolanaAddress('1'.repeat(31)), false)
+eq('a real 32-byte key is accepted', isSolanaAddress(SOL_MINT), true)
+eq('the escrow program id is accepted', isSolanaAddress('3ozh4TQJbeyXFUuXsj7fYmHB5aCVkg24cZN5zZmigR44'), true)
+// 44 base58 chars that decode to 33 bytes: right shape, wrong key.
+eq('a 33-byte value is rejected', isSolanaAddress('zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz'), false)
 
 console.log('\nnormalizeAddress:')
 eq('evm folds to lowercase', normalizeAddress('ETHEREUM', EVM_NFT), EVM_NFT.toLowerCase())

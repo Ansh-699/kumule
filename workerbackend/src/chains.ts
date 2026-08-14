@@ -61,9 +61,47 @@ export const parseChain = (v: unknown): Chain | null => {
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/
 // Base58, 32 bytes: 32-44 chars in practice.
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/
+const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+
+/**
+ * How many bytes a base58 string decodes to. Only the length is needed, never the value.
+ *
+ * Quadratic in the input, which for a 44-character address is nothing.
+ */
+const base58ByteLength = (s: string): number => {
+    const bytes: number[] = []
+    for (const ch of s) {
+        let carry = BASE58.indexOf(ch)
+        if (carry < 0) return -1
+        for (let i = 0; i < bytes.length; i++) {
+            carry += bytes[i] * 58
+            bytes[i] = carry & 0xff
+            carry >>= 8
+        }
+        while (carry > 0) {
+            bytes.push(carry & 0xff)
+            carry >>= 8
+        }
+    }
+    // A leading '1' is a leading zero byte, which the accumulation above never produces.
+    let zeros = 0
+    while (zeros < s.length && s[zeros] === '1') zeros++
+    return zeros + bytes.length
+}
 
 export const isEvmAddress = (a: string): boolean => EVM_ADDRESS.test(a)
-export const isSolanaAddress = (a: string): boolean => SOLANA_ADDRESS.test(a)
+
+/**
+ * A Solana address is base58 that decodes to exactly 32 bytes.
+ *
+ * The character window alone does not say that. '1' encodes a zero byte, so 43 of them is
+ * well-formed base58 of an allowed length and 43 bytes long - not a public key. Strings like
+ * that passed this check and then threw inside PublicKey()/publicKey(), turning a malformed
+ * request into a 500, or (once confirmBurn started failing closed) a 503 telling the caller to
+ * retry something that can never work.
+ */
+export const isSolanaAddress = (a: string): boolean =>
+    SOLANA_ADDRESS.test(a) && base58ByteLength(a) === 32
 
 export const isValidAddress = (chain: Chain, address: string): boolean =>
     chain === 'ETHEREUM' ? isEvmAddress(address) : isSolanaAddress(address)
