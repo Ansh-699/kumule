@@ -33,6 +33,7 @@ const bs58Encode = (b: Uint8Array) => base58.deserialize(b)[0]
 import { startLocalNeonProxy, resetDatabase, inspect, POSTGRES_URL } from './db-harness'
 import { listNfts } from './src/nfts'
 import { confirmBurn } from './src/burn'
+import { mintNft } from './src/mint'
 import { settle } from './src/settle'
 import { claimMedal } from './src/medals'
 import { ensureUser, linkWallet, withPrisma } from './src/db'
@@ -167,6 +168,35 @@ const startStubRpc = async (): Promise<{ url: string; stop: () => Promise<void> 
     }
 }
 
+/**
+ * A metadata host. mintNft resolves the URI it is given server-side rather than trusting the
+ * caller's fields, so there has to be something real at the other end of that fetch - including
+ * an image that answers HEAD, which is what makes `imageOk` mean anything.
+ */
+const startMetadataHost = async (): Promise<{ url: string; stop: () => Promise<void> }> => {
+    let origin = ''
+    const server: Server = createServer((req, res) => {
+        if (req.url?.startsWith('/img.png')) {
+            res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': '0' })
+            return res.end()
+        }
+        if (req.url?.startsWith('/meta.json')) {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            return res.end(JSON.stringify({
+                name: 'Minted One',
+                description: 'From the metadata, not the caller',
+                image: `${origin}/img.png`,
+                attributes: [{ trait_type: 'Category', value: 'PFP' }],
+            }))
+        }
+        res.writeHead(404).end()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as { port: number }
+    origin = `http://127.0.0.1:${port}`
+    return { url: origin, stop: () => new Promise<void>((resolve) => server.close(() => resolve())) }
+}
+
 const run = async () => {
     if (!(await postgresReachable())) {
         console.log(`SKIPPED: no Postgres on ${POSTGRES_URL.replace(/:[^:@]+@/, ':***@')}`)
@@ -176,6 +206,7 @@ const run = async () => {
 
     const stopProxy = await startLocalNeonProxy()
     const rpc = await startStubRpc()
+    const host = await startMetadataHost()
     const env = { DATABASE_URL: POSTGRES_URL, SOLANA_RPC_URL: rpc.url }
 
     try {
@@ -328,6 +359,56 @@ const run = async () => {
         const byId = await inspect<{ id: string }>((p) => p.transaction.findUnique({ where: { txHash: 'sig-mint' } }))
         const idVerdict = await verifyTransactionChecksum(POSTGRES_URL, byId.id)
         eq('the same row verifies by id as well as by hash', idVerdict.valid, true)
+
+        // ---------------------------------------------------------------- mint
+        console.log('')
+        console.log('a mint lands as a row the marketplace can render:')
+
+        const metadataUri = `${host.url}/meta.json`
+        const mintApp = new Hono()
+        mintApp.post('/mint', mintNft as any)
+        const doMint = (body: unknown) => mintApp.request('/mint', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        }, env)
+
+        const mintRes = await doMint({ uri: metadataUri, name: 'Minted One', owner: SELLER })
+        eq('mint returns a transaction to sign', mintRes.status, 200)
+        const minted = await mintRes.json() as { mint?: string; transaction?: string }
+        eq('with an asset key', typeof minted.mint, 'string')
+        eq('and a base64 transaction', typeof minted.transaction, 'string')
+
+        const row = await inspect<any>((p) => p.nft.findUnique({ where: { assetId: minted.mint } }))
+        eq('an Nft row exists for the new asset', row?.assetId, minted.mint)
+        eq('owned by the minter', row?.ownerAddress, SELLER)
+        eq('and credited to them as creator', row?.creatorAddress, SELLER)
+        // The whole point of resolving metadata server-side: without it every mint landed with
+        // imageUrl null and category OTHER while the JSON at the URI held both, so the grid
+        // rendered "No image available" for assets that had a perfectly good image.
+        eq('the image comes from the metadata JSON', row?.imageUrl, `${host.url}/img.png`)
+        eq('so does the category', row?.category, 'PFP')
+        eq('and the description', row?.description, 'From the metadata, not the caller')
+        eq('imageOk is true because the image actually served', row?.imageOk, true)
+
+        const mintTx = await inspect<any>((p) => p.transaction.findFirst({
+            where: { kind: 'MINT', metadata: { path: ['assetId'], equals: minted.mint } },
+        }))
+        // PENDING: the transaction is handed back unsigned, so nothing is confirmed yet.
+        eq('a PENDING MINT transaction is recorded', mintTx?.status, 'PENDING')
+        const mintVerdict = await verifyTransactionChecksum(POSTGRES_URL, mintTx.id)
+        if (mintVerdict.valid) ok('the MINT record verifies')
+        else fail('the MINT record does not verify', mintVerdict.message)
+
+        // One metadata URI, one token. Two rows pointing at the same JSON is how v1 ended up
+        // with duplicates nobody could tell apart.
+        const dupe = await doMint({ uri: metadataUri, name: 'Minted Again', owner: SELLER })
+        eq('a second mint of the same URI is refused', dupe.status, 409)
+        const total = await inspect((p) => p.nft.count({ where: { metadataUri } }))
+        eq('and writes no second row', total, 1)
+
+        // A non-string owner used to reach owner?.slice and come back as a raw 500.
+        eq('a numeric owner is a 400', (await doMint({ uri: `${host.url}/other.json`, name: 'x', owner: 42 })).status, 400)
 
         // ---------------------------------------------------------------- buy -> settle
         console.log('')
@@ -564,6 +645,7 @@ const run = async () => {
 
         await resetDatabase()
     } finally {
+        await host.stop()
         await rpc.stop()
         await stopProxy()
     }
