@@ -5,7 +5,7 @@ import {
     EyeOff, Eye, Loader2, ExternalLink, Coins,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { adminApi, type Chain } from '@/lib/api'
+import { api, adminApi, type Chain } from '@/lib/api'
 import { CHAIN_UI, formatPrice, formatCount, shortAddress, relativeTime } from '@/lib/chain-ui'
 import { ChainBadge, ChainMark } from '@/components/ChainBadge'
 
@@ -410,10 +410,13 @@ const EventsTab = ({ admin }: { admin: ReturnType<typeof adminApi> }) => {
     const [name, setName] = useState('')
     const [grant, setGrant] = useState({ eventId: '', wallet: '', points: '10' })
 
-    const { data } = useQuery({
+    const { data, isLoading, isError, error } = useQuery({
         queryKey: ['admin-events'],
         // Reuses the public list; events are not secret, only the mutations are.
-        queryFn: async () => (await fetch(`${import.meta.env.VITE_API_BASE ?? 'https://kumele-backend.ansht.workers.dev'}/api/events`)).json(),
+        // Routed through api.events rather than a raw fetch: the shared request helper
+        // checks res.ok, so a 500 surfaces as an error here instead of being parsed as
+        // JSON and silently rendering an empty event list.
+        queryFn: api.events,
     })
 
     const create = useMutation({
@@ -469,7 +472,7 @@ const EventsTab = ({ admin }: { admin: ReturnType<typeof adminApi> }) => {
                         className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white"
                     >
                         <option value="">Select event</option>
-                        {events.map((e: any) => (
+                        {events.map((e) => (
                             <option key={e.id} value={e.id} className="bg-[#0e1018]">{e.name}</option>
                         ))}
                     </select>
@@ -501,18 +504,22 @@ const EventsTab = ({ admin }: { admin: ReturnType<typeof adminApi> }) => {
             </Panel>
 
             <Panel title="Events">
-                {events.length === 0 ? (
+                {isError ? (
+                    <ErrorBox error={error} />
+                ) : isLoading ? (
+                    <div className="h-24 animate-pulse rounded-xl bg-white/[0.03]" />
+                ) : events.length === 0 ? (
                     <p className="text-sm text-white/40">No events yet.</p>
                 ) : (
                     <div className="space-y-3">
-                        {events.map((e: any) => (
+                        {events.map((e) => (
                             <div key={e.id} className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
                                 <div className="flex flex-wrap items-center justify-between gap-3">
                                     <div>
                                         <h4 className="text-sm font-semibold text-white">{e.name}</h4>
                                         <p className="text-xs text-white/45">
                                             {e.participants} participants · {e.claims} claims ·{' '}
-                                            {e.medals.filter((m: any) => m.minted).length}/{e.medals.length} medals minted
+                                            {e.medals.filter((m) => m.minted).length}/{e.medals.length} medals minted
                                         </p>
                                     </div>
                                     <button
