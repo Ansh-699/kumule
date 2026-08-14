@@ -2,6 +2,7 @@ import { Context } from 'hono'
 import { fetchAsset } from '@metaplex-foundation/mpl-core'
 import { publicKey as toPublicKey } from '@metaplex-foundation/umi'
 import { getUmi } from './umi'
+import { isSolanaAddress } from './chains'
 
 export const searchNftByAsset = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     const address = c.req.query('asset')
@@ -10,8 +11,11 @@ export const searchNftByAsset = async (c: Context<{ Bindings: CloudflareBindings
         return c.json({ error: 'Please provide an asset address via ?asset=<address>' }, 400)
     }
 
-    // Validate Solana address format
-    if (address.length < 32 || address.length > 44) {
+    // Full base58 validation, not just a length window: a same-length string containing
+    // base58-illegal characters (0, O, I, l) used to pass here and fall through to the
+    // SOLANA_RPC_URL branch, so a malformed address reported itself as a server
+    // misconfiguration (500) instead of a bad request (400).
+    if (!isSolanaAddress(address)) {
         return c.json({ error: 'Invalid Solana address format' }, 400)
     }
 
