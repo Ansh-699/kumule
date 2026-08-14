@@ -198,6 +198,8 @@ section.
 
 ## Support
 
-- **GitHub:** [Ansh-699/NFT-Marketplace](https://github.com/Ansh-699/NFT-Marketplace)
+- **GitHub:** [Ansh-699/kumule](https://github.com/Ansh-699/kumule) — this repository's `origin`.
+  `Ansh-699/NFT-Marketplace` is the v1 project, last pushed January 2026; it is a different
+  codebase and this file used to link to it.
 - **Solana Explorer:** [devnet](https://explorer.solana.com/?cluster=devnet)
 - **Base Sepolia Explorer:** [sepolia.basescan.org](https://sepolia.basescan.org/)
