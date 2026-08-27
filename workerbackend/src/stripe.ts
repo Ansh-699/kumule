@@ -225,7 +225,13 @@ export const createRefund = (
         '/refunds',
         {
             payment_intent: params.paymentIntentId,
-            metadata: { kumule_payment_id: params.paymentRowId, kumule_reason: params.reason ?? '' },
+            // The reason is deliberately NOT sent. Stripe compares an idempotent request's
+            // parameters against the original and errors when they differ - and the two
+            // callers pass different free-text reasons for the same payment, so the retry
+            // that matters would have been rejected outright rather than replayed. The reason
+            // is already kept on MintJob.lastError and Payment.failureReason, where it is
+            // actually readable.
+            metadata: { kumule_payment_id: params.paymentRowId },
         },
         `refund:${params.paymentRowId}`
     )

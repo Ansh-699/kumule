@@ -496,7 +496,105 @@ const run = async () => {
             String(late.job.lastError).includes('after minting began'), true)
 
         console.log('')
-        console.log('a failed card leaves nothing queued:')
+        console.log('a declined card can be retried, and the retry actually mints:')
+
+        // A decline is not the end of a PaymentIntent. Stripe returns it to
+        // requires_payment_method so the buyer can try another card on the same client
+        // secret, and the checkout page leaves that secret mounted - so retrying is the
+        // ordinary path, not an edge case.
+        //
+        // This used to mark the job FAILED on the decline. The later succeeded event only
+        // advances a job in AWAITING_PAYMENT, so it matched nothing, answered 200 so Stripe
+        // never redelivered, and no sweep looks at FAILED. The buyer paid on their second
+        // card and received nothing, permanently, with no refund and no retry.
+        const rq2 = (await (await app.request('/quote?operation=nft_mint&chain=solana', {}, env)).json()) as any
+        const retried = (await (await post('/intent', {
+            quoteId: rq2.quote_id, ownerAddress: OWNER, name: 'Retried',
+            metadataUri: 'https://example.invalid/retry.json',
+        })).json()) as any
+        const retriedPayment: any = await inspect((p: any) => p.payment.findUnique({ where: { id: retried.paymentId } }))
+
+        await webhook({
+            type: 'payment_intent.payment_failed', created: Math.floor(Date.now() / 1000),
+            data: { object: { id: retriedPayment.stripePaymentIntentId, last_payment_error: { message: 'card declined' } } },
+        })
+        const declined: any = await inspect(async (p: any) => ({
+            payment: await p.payment.findUnique({ where: { id: retried.paymentId } }),
+            job: await p.mintJob.findFirst({ where: { paymentId: retried.paymentId } }),
+        }))
+        eq('the decline is recorded but the payment stays retryable', declined.payment.status, 'REQUIRES_PAYMENT')
+        eq('with the reason kept', String(declined.payment.failureReason).includes('declined'), true)
+        eq('and the job is still waiting, not killed', declined.job.status, 'AWAITING_PAYMENT')
+
+        // Second card works, on the same intent.
+        await webhook({
+            type: 'payment_intent.succeeded', created: Math.floor(Date.now() / 1000),
+            data: { object: { id: retriedPayment.stripePaymentIntentId } },
+        })
+        const recovered: any = await inspect(async (p: any) => ({
+            payment: await p.payment.findUnique({ where: { id: retried.paymentId } }),
+            job: await p.mintJob.findFirst({ where: { paymentId: retried.paymentId } }),
+        }))
+        eq('the retry marks the payment paid', recovered.payment.status, 'PAID')
+        eq('and the mint is queued after all', ['PENDING', 'MINTING'].includes(recovered.job.status), true)
+
+        // Ordering is not guaranteed, so a decline event can arrive after the success.
+        await webhook({
+            type: 'payment_intent.payment_failed', created: Math.floor(Date.now() / 1000),
+            data: { object: { id: retriedPayment.stripePaymentIntentId, last_payment_error: { message: 'late decline' } } },
+        })
+        const afterLate: any = await inspect((p: any) => p.payment.findUnique({ where: { id: retried.paymentId } }))
+        eq('a late decline does not un-pay a settled payment', afterLate.status, 'PAID')
+
+        console.log('')
+        console.log('a cancelled payment IS terminal:')
+
+        const cq = (await (await app.request('/quote?operation=nft_mint&chain=solana', {}, env)).json()) as any
+        const cancelled = (await (await post('/intent', {
+            quoteId: cq.quote_id, ownerAddress: OWNER, name: 'Cancelled',
+            metadataUri: 'https://example.invalid/c.json',
+        })).json()) as any
+        const cPay: any = await inspect((p: any) => p.payment.findUnique({ where: { id: cancelled.paymentId } }))
+        await webhook({
+            type: 'payment_intent.canceled', created: Math.floor(Date.now() / 1000),
+            data: { object: { id: cPay.stripePaymentIntentId } },
+        })
+        const cAfter: any = await inspect(async (p: any) => ({
+            payment: await p.payment.findUnique({ where: { id: cancelled.paymentId } }),
+            job: await p.mintJob.findFirst({ where: { paymentId: cancelled.paymentId } }),
+        }))
+        eq('a cancelled payment is failed', cAfter.payment.status, 'FAILED')
+        eq('and its job is closed', cAfter.job.status, 'FAILED')
+
+        console.log('')
+        console.log('a partial refund does not cancel a mint:')
+
+        const pq = (await (await app.request('/quote?operation=nft_mint&chain=solana', {}, env)).json()) as any
+        const partial = (await (await post('/intent', {
+            quoteId: pq.quote_id, ownerAddress: OWNER, name: 'Partial',
+            metadataUri: 'https://example.invalid/p.json',
+        })).json()) as any
+        const pPay: any = await inspect((p: any) => p.payment.findUnique({ where: { id: partial.paymentId } }))
+        await webhook({
+            type: 'payment_intent.succeeded', created: Math.floor(Date.now() / 1000),
+            data: { object: { id: pPay.stripePaymentIntentId } },
+        })
+        // charge.refunded fires for partial refunds as well as full ones.
+        await webhook({
+            type: 'charge.refunded', created: Math.floor(Date.now() / 1000),
+            data: {
+                object: {
+                    id: 'ch_partial', payment_intent: pPay.stripePaymentIntentId,
+                    amount: pPay.totalAmountMinor, amount_refunded: 50,
+                },
+            },
+        })
+        const pAfter: any = await inspect((p: any) => p.payment.findUnique({ where: { id: partial.paymentId } }))
+        eq('a partial refund leaves the payment paid', pAfter.status, 'PAID')
+        eq('but records what happened', String(pAfter.failureReason).includes('partially refunded'), true)
+
+        console.log('')
+        console.log('a full refund still does:')
 
         const fq = (await (await app.request('/quote?operation=nft_mint&chain=solana', {}, env)).json()) as any
         const fIntent = (await (await post('/intent', {
@@ -507,12 +605,13 @@ const run = async () => {
             type: 'payment_intent.payment_failed', created: Math.floor(Date.now() / 1000),
             data: { object: { id: fPayment.stripePaymentIntentId, last_payment_error: { message: 'card declined' } } },
         })
-        const declined: any = await inspect(async (p: any) => ({
+        const cancelledFlow: any = await inspect(async (p: any) => ({
             payment: await p.payment.findUnique({ where: { id: fIntent.paymentId } }),
             job: await p.mintJob.findFirst({ where: { paymentId: fIntent.paymentId } }),
         }))
-        eq('the payment is failed', declined.payment.status, 'FAILED')
-        eq('the job is failed, not pending', declined.job.status, 'FAILED')
+        // A decline leaves both retryable - see the decline-and-retry section above.
+        eq('a declined payment stays retryable', cancelledFlow.payment.status, 'REQUIRES_PAYMENT')
+        eq('and its job keeps waiting', cancelledFlow.job.status, 'AWAITING_PAYMENT')
 
         console.log('')
         console.log('a mint that can never succeed gives the money back:')

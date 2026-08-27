@@ -9,7 +9,7 @@ import { Context } from 'hono'
 import { withPrisma, getConnectionString } from './db'
 import { isSolanaAddress } from './chains'
 import { getBalance } from './solana'
-import { mintPricing, taxOn, directCryptoEnabled } from './config'
+import { mintPricing, taxOn, directCryptoEnabled, MINT_LEASE_MS } from './config'
 import { assetBytesFor, utf8Bytes, MAX_NAME_BYTES, MAX_URI_BYTES } from './web3fees'
 import { formatMinor } from './fx'
 import { createPaymentIntent, verifyWebhookSignature } from './stripe'
@@ -101,8 +101,15 @@ export const createIntent = async (c: Context<{ Bindings: CloudflareBindings }>)
         }
 
         // Can the platform actually pay for this mint?
+        // Both mint prerequisites, checked before any money is taken. The seed was the one
+        // that was not: without it runMintJob returns before the claim, so `attempts` never
+        // increments, the cap is never reached and no refund ever fires - a charged order
+        // retrying every five minutes forever with nothing to stop it.
         const vault = platformSigner(c.env)
-        if (!vault) return c.json({ error: 'Minting is not configured' }, 503)
+        if (!vault || !c.env.MINT_ASSET_SEED) {
+            console.error('[PAYMENTS] refusing checkout: mint vault or MINT_ASSET_SEED missing')
+            return c.json({ error: 'Minting is not configured. No payment was taken.' }, 503)
+        }
         const balance = await getBalance(c.env, vault.address)
         if (balance !== null && balance < quote.networkFeeLamports * VAULT_SAFETY_FACTOR) {
             console.error(
@@ -437,34 +444,77 @@ export const stripeWebhook = async (c: Context<{ Bindings: CloudflareBindings }>
         }
 
         if (type === 'payment_intent.payment_failed' || type === 'payment_intent.canceled') {
+            // A DECLINE IS NOT THE END OF A PAYMENT. Stripe returns a failed PaymentIntent to
+            // requires_payment_method so the buyer can try another card on the same intent -
+            // and the checkout page leaves the same client secret mounted, so retrying is the
+            // normal path, not an edge case.
+            //
+            // This used to move the job to FAILED on a decline. The later succeeded event only
+            // advances a job in AWAITING_PAYMENT, so it matched nothing, answered 200 so Stripe
+            // never redelivered, and no sweep looks at FAILED. The buyer paid on the second
+            // card and received nothing, permanently, with no refund and no retry.
+            //
+            // So a decline touches the Payment row only. Cancellation is the terminal one.
+            const terminal = type === 'payment_intent.canceled'
             await withPrisma(connectionString, async (prisma) => {
                 const payment = await prisma.payment.findUnique({
                     where: { stripePaymentIntentId: intentId },
                 })
                 if (!payment) return
-                await prisma.payment.update({
-                    where: { id: payment.id },
+
+                // Guarded, because Stripe guarantees no ordering: a decline event can arrive
+                // after the retry that succeeded, and must not overwrite a settled payment.
+                // The succeeded handler above guards its own write for the same reason.
+                await prisma.payment.updateMany({
+                    where: { id: payment.id, status: { in: ['REQUIRES_PAYMENT', 'FAILED'] } },
                     data: {
-                        status: 'FAILED',
+                        status: terminal ? 'FAILED' : 'REQUIRES_PAYMENT',
                         failureReason: intent?.last_payment_error?.message?.slice(0, 500) ?? type,
                     },
                 })
-                // Only a job that never started. A mint already under way is not cancelled by
-                // a late failure event.
-                await prisma.mintJob.updateMany({
-                    where: { paymentId: payment.id, status: 'AWAITING_PAYMENT' },
-                    data: { status: 'FAILED', lastError: type },
-                })
+
+                if (terminal) {
+                    // Cancelled intents cannot be retried, so the job that was waiting on one
+                    // never will be paid for.
+                    await prisma.mintJob.updateMany({
+                        where: { paymentId: payment.id, status: 'AWAITING_PAYMENT' },
+                        data: { status: 'FAILED', lastError: type },
+                    })
+                }
             })
-            return c.json({ received: true })
+            return c.json({ received: true, terminal })
         }
 
         if (type === 'charge.refunded') {
+            // This event fires for PARTIAL refunds as well as full ones. Treating a partial
+            // refund as a cancellation would stop a mint the buyer has still largely paid for.
+            // The Charge carries both numbers, so ask rather than assume; when it does not
+            // (a shape we do not recognise), treat it as full, because failing to stop a mint
+            // we were told to stop is the worse mistake.
+            const refunded = Number(intent?.amount_refunded)
+            const charged = Number(intent?.amount)
+            const isFull =
+                !Number.isFinite(refunded) || !Number.isFinite(charged) || refunded >= charged
+
             await withPrisma(connectionString, async (prisma) => {
                 const payment = await prisma.payment.findUnique({
                     where: { stripePaymentIntentId: intentId },
                 })
                 if (!payment) return
+
+                if (!isFull) {
+                    // Recorded, not acted on. A partial refund is a commercial decision about
+                    // an order that still stands.
+                    await prisma.payment.update({
+                        where: { id: payment.id },
+                        data: {
+                            failureReason:
+                                `partially refunded: ${refunded} of ${charged} ${payment.currency}`,
+                        },
+                    })
+                    return
+                }
+
                 await prisma.payment.update({
                     where: { id: payment.id },
                     data: { status: 'REFUNDED' },
@@ -616,6 +666,37 @@ export const adminRefundPayment = async (c: Context<{ Bindings: CloudflareBindin
             )
         }
         if (!payment.mintJob) return c.json({ error: 'Payment has no mint job' }, 409)
+
+        // A job whose lease is still live has a worker inside it right now, possibly between
+        // sendTransaction and confirmation. Refunding underneath that races an asset onto the
+        // chain that has already been paid back.
+        //
+        // Only a LIVE lease though. A job stuck in MINTING with a long-dead lease is the
+        // textbook stranded payment and is exactly what an operator needs this button for, so
+        // refusing all of MINTING would block the common case to prevent the rare one.
+        const lockedAt = payment.mintJob.lockedAt
+        if (
+            payment.mintJob.status === 'MINTING' &&
+            lockedAt &&
+            Date.now() - lockedAt.getTime() < MINT_LEASE_MS
+        ) {
+            return c.json(
+                {
+                    error: 'A mint is in flight for this payment. Try again once its lease expires.',
+                    retryAfterSeconds: Math.ceil((MINT_LEASE_MS - (Date.now() - lockedAt.getTime())) / 1000),
+                },
+                409
+            )
+        }
+
+        // Refunding something Stripe never captured makes Stripe raise an error and burns the
+        // idempotency key for the refund that may genuinely be needed later.
+        if (payment.status !== 'PAID') {
+            return c.json(
+                { error: `Only a paid payment can be refunded; this one is ${payment.status}.` },
+                409
+            )
+        }
 
         const reason = (await c.req.json().catch(() => null))?.reason ?? 'refunded by an administrator'
         const ok = await refundJob(c.env, connectionString, payment.mintJob.id, String(reason))

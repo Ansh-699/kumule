@@ -282,6 +282,16 @@ const run = async () => {
         if (job.txSignature) ok(`signature ${job.txSignature.slice(0, 20)}…`)
         else fail('no signature recorded')
 
+        // The signature is written before the transaction is broadcast, so that a process cut
+        // short mid-send still knows what it sent. That is only sound if a signed
+        // transaction's first signature really is the id the network reports back - so ask
+        // the network.
+        const onChainTx = await rpcCall('getTransaction', [
+            job.txSignature, { encoding: 'json', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+        ])
+        eq('the signature recorded before sending is the one the chain knows',
+            onChainTx?.result?.transaction?.signatures?.[0], job.txSignature)
+
         // The derivation is the idempotency key, so it has to be the address that actually
         // got created - not merely something plausible.
         const umi = getUmi(RPC)

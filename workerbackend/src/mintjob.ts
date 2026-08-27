@@ -25,7 +25,8 @@ import {
     type KeypairSigner,
     type Transaction,
 } from '@metaplex-foundation/umi'
-import { createV1, fetchAsset } from '@metaplex-foundation/mpl-core'
+import { createV1 } from '@metaplex-foundation/mpl-core'
+import { getAssetV1AccountDataSerializer } from '@metaplex-foundation/mpl-core/dist/src/generated/types/assetV1AccountData'
 import { base58 } from '@metaplex-foundation/umi/serializers'
 import { getUmi, withPriorityFees } from './umi'
 import { solanaRpc, makeAssetId, fromBaseUnits } from './chains'
@@ -125,6 +126,9 @@ export const readAssetState = async (
     umi: ReturnType<typeof getUmi>,
     address: string
 ): Promise<AssetState> => {
+    // Throws on an RPC failure rather than catching it, deliberately. A node that will not
+    // answer is a transient condition and the caller must retry; only a definite answer about
+    // the account may lead to a terminal state.
     const account = await umi.rpc.getAccount(publicKey(address))
     if (!account.exists) return { kind: 'absent' }
 
@@ -135,11 +139,17 @@ export const readAssetState = async (
         }
     }
 
+    // Decoded from the bytes getAccount already returned, instead of a second network round
+    // trip through fetchAsset. That is one fewer subrequest, and more importantly it removes
+    // an ambiguity that could brick a paid order: fetchAsset issues its own RPC call, so a
+    // 429 or a lagging node threw the same way a genuinely malformed account does, and the
+    // catch turned both into a terminal BLOCKED. Here nothing can fail except the decode, so
+    // a failure really does mean "this is not a Core asset".
     try {
-        const asset = await fetchAsset(umi, publicKey(address))
+        const [asset] = getAssetV1AccountDataSerializer().deserialize(account.data)
         return { kind: 'minted', owner: asset.owner.toString() }
     } catch (e) {
-        return { kind: 'blocked', reason: `account exists but is not a readable Core asset: ${e}` }
+        return { kind: 'blocked', reason: `account exists but does not decode as a Core asset: ${e}` }
     }
 }
 
@@ -247,29 +257,38 @@ export const runMintJob = async (
 
     if (!claimed) return 'not-claimed'
 
-    // Checked here, immediately after the claim, rather than in the catch below - because the
-    // path most likely to loop does not throw. A mint that is sent but never confirms takes
-    // the `retry` branch, which used to skip the cap entirely: an unfunded vault or a stuck
-    // chain would re-send every five minutes forever while the buyer stayed charged and no
-    // refund ever fired. One guard at the top covers every way out of this function.
-    if (claimed.attempts > MAX_MINT_ATTEMPTS) {
-        console.error(`[MINTJOB ${jobId}] giving up after ${claimed.attempts} attempts; refunding`)
-        await refundJob(
-            env,
-            connectionString,
-            jobId,
-            `mint did not complete after ${MAX_MINT_ATTEMPTS} attempts: ${claimed.lastError ?? 'no further detail'}`
-        )
-        return 'refunded'
-    }
+    // The attempt cap is NOT decided here. It used to be, and that was a way to give a buyer
+    // their money back for an NFT they had already received: the retry path exists precisely
+    // because a transaction can be sent and land later, so a job can reach the cap with the
+    // asset alive on chain. Refunding on a counter alone, before asking, hands over both.
+    //
+    // The decision moves to the point where the chain has actually answered - see the
+    // exhausted branch after readAssetState. What stays here is only the count.
+    const exhausted = claimed.attempts > MAX_MINT_ATTEMPTS
 
+    /**
+     * Release the job.
+     *
+     * updateMany with a status precondition rather than update-by-id. Everything after the
+     * claim used to address the row by primary key with no condition, which quietly undid
+     * anything that happened in the meantime - a refund landing mid-mint was overwritten by
+     * this write, leaving the buyer with the money and the asset. Only the worker still
+     * holding the lease may move the row.
+     */
     const fail = async (reason: string, terminal: boolean) => {
-        await withPrisma(connectionString, (prisma) =>
-            prisma.mintJob.update({
-                where: { id: jobId },
-                data: { status: terminal ? 'BLOCKED' : 'PENDING', lastError: reason.slice(0, 500) },
+        const { count } = await withPrisma(connectionString, (prisma) =>
+            prisma.mintJob.updateMany({
+                where: { id: jobId, status: 'MINTING' },
+                data: {
+                    status: terminal ? 'BLOCKED' : 'PENDING',
+                    lastError: reason.slice(0, 500),
+                    lockedAt: null,
+                },
             })
         )
+        if (count === 0) {
+            console.warn(`[MINTJOB ${jobId}] left MINTING while this worker held it; not overwriting`)
+        }
     }
 
     try {
@@ -311,8 +330,21 @@ export const runMintJob = async (
         let alreadyMinted = false
 
         if (state.kind === 'minted') {
-            // A previous attempt landed. Nothing to send; fall through to recording it.
+            // A previous attempt landed. Nothing to send; fall through to recording it. Note
+            // this is reached even when the attempt cap is exhausted - an asset that exists is
+            // delivered and recorded, never refunded.
             alreadyMinted = true
+        } else if (exhausted) {
+            // The chain has now been asked and says the asset does not exist, so refunding is
+            // safe. This is the only place that decision can be made honestly.
+            console.error(`[MINTJOB ${jobId}] no asset after ${claimed.attempts} attempts; refunding`)
+            await refundJob(
+                env,
+                connectionString,
+                jobId,
+                `mint did not complete after ${MAX_MINT_ATTEMPTS} attempts: ${claimed.lastError ?? 'no further detail'}`
+            )
+            return 'refunded'
         } else {
             const builder = withPriorityFees(
                 umi,
@@ -330,12 +362,24 @@ export const runMintJob = async (
             // buildAndSign, not build: createV1 needs the new asset keypair to co-sign
             // alongside the identity.
             const signed = await withBlockhash.buildAndSign(umi)
+
+            // Persisted BEFORE the send, not after. A signature is fully determined once the
+            // transaction is signed, and writing it afterwards leaves a window - the whole
+            // send plus up to fourteen seconds of confirmation polling - in which the process
+            // can be cut short with a transaction broadcast and nothing recording its id. The
+            // asset would exist and its cost would be unaccounted for, permanently.
+            // A signed transaction's id IS its first signature; nothing about sending it
+            // changes that, which is what makes it safe to record before broadcasting.
+            signature = base58.deserialize(signed.signatures[0])[0]
+            await withPrisma(connectionString, (prisma) =>
+                prisma.mintJob.updateMany({
+                    where: { id: jobId, status: 'MINTING' },
+                    data: { txSignature: signature },
+                })
+            )
+
             const sent = await sendWithBoundedConfirm(env, umi, signed)
             signature = sent.signature
-
-            await withPrisma(connectionString, (prisma) =>
-                prisma.mintJob.update({ where: { id: jobId }, data: { txSignature: sent.signature } })
-            )
 
             if (!sent.confirmed) {
                 // Sent but not seen to land inside the budget. Deliberately left retryable:
@@ -540,23 +584,41 @@ export const refundJob = async (
         await prisma.mintJob.update({
             where: { id: jobId },
             data: {
-                status: refund.ok ? 'REFUNDED' : 'FAILED',
-                lastError: reason.slice(0, 500),
+                // A refund that did not go through leaves the job PENDING, not FAILED. FAILED
+                // is invisible to the sweep, so the old behaviour turned a transient Stripe
+                // error into a payment nobody would ever refund and nothing would ever retry.
+                status: refund.ok ? 'REFUNDED' : 'PENDING',
+                lastError: refund.ok
+                    ? reason.slice(0, 500)
+                    : `refund failed, will retry: ${refund.message}`.slice(0, 500),
                 lockedAt: null,
             },
         })
-        await prisma.payment.update({
-            where: { id: job.paymentId },
-            data: {
-                status: refund.ok ? 'REFUNDED' : 'FAILED',
-                stripeRefundId: refund.ok ? refund.data.id : null,
-                failureReason: reason.slice(0, 500),
-            },
-        })
+
+        if (refund.ok) {
+            await prisma.payment.update({
+                where: { id: job.paymentId },
+                data: {
+                    status: 'REFUNDED',
+                    stripeRefundId: refund.data.id,
+                    failureReason: reason.slice(0, 500),
+                },
+            })
+        } else {
+            // The money is still with Stripe and the charge is still settled, so the payment
+            // is still PAID. Writing FAILED here would be a lie about the customer's money -
+            // and worse, `stranded` in adminListPayments counts PAID rows whose mint has not
+            // landed, so downgrading the status hid the row from the one alarm built to find
+            // exactly this. Record why, change nothing else.
+            await prisma.payment.update({
+                where: { id: job.paymentId },
+                data: { failureReason: `refund failed: ${refund.message}`.slice(0, 500) },
+            })
+        }
     })
 
     if (!refund.ok) {
-        console.error(`[MINTJOB ${jobId}] refund failed: ${refund.message}`)
+        console.error(`[MINTJOB ${jobId}] refund failed, payment left PAID for retry: ${refund.message}`)
     }
     return refund.ok
 }

@@ -38,7 +38,17 @@ const PUBLISHABLE_KEY = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY as string | 
 
 // Module scope: loadStripe injects a script tag, and calling it per render would add one per
 // keystroke.
-const stripePromise = PUBLISHABLE_KEY ? loadStripe(PUBLISHABLE_KEY) : null
+// Resolved to null rather than left rejecting. react-stripe-js consumes this promise with a
+// bare .then() and no .catch(), so a blocked js.stripe.com - an ad blocker, a strict CSP, a
+// flaky network - left <Elements> permanently unpopulated: the pay button stayed disabled with
+// no message and no explanation. Null takes the same branch as "not configured", which already
+// says something useful.
+const stripePromise = PUBLISHABLE_KEY
+    ? loadStripe(PUBLISHABLE_KEY).catch((e) => {
+        console.error('stripe.js failed to load:', e)
+        return null
+    })
+    : null
 
 type State =
     | { kind: 'idle' }
@@ -53,7 +63,11 @@ type State =
     }
     | { kind: 'minting'; paymentId: string; note: string }
     | { kind: 'done'; assetId: string; explorerUrl?: string }
-    | { kind: 'error'; message: string }
+    // paymentId is present when a PaymentIntent already exists for this attempt. It is what
+    // stops the form re-arming: without it, any post-payment error dropped the buyer back on
+    // a live "Continue to payment" button with the same file and name still filled in, and
+    // pressing it created a SECOND PaymentIntent for the same mint.
+    | { kind: 'error'; message: string; paymentId?: string }
 
 /**
  * The card form, and the wait for the chain afterwards.
@@ -282,6 +296,10 @@ export const CreatePage = () => {
 
     const busy = state.kind === 'busy'
     const inCheckout = state.kind === 'checkout'
+    // An error that happened after a payment was created is not a "try again" - the money may
+    // already have moved. The mint is guaranteed server-side by the cron sweep either way, so
+    // the right thing to offer is the payment reference, not another charge.
+    const chargedAlready = state.kind === 'error' && Boolean(state.paymentId)
 
     return (
         <div className="mx-auto max-w-2xl px-4 py-8 sm:px-6">
@@ -323,7 +341,7 @@ export const CreatePage = () => {
                 </div>
 
                 <div>
-                    <label className="mb-2 block text-xs uppercase tracking-wider text-white/40">Image</label>
+                    <label htmlFor="nft-image" className="mb-2 block text-xs uppercase tracking-wider text-white/40">Image</label>
                     <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-8 text-center hover:border-white/30">
                         {preview ? (
                             <img src={preview} alt="" className="h-40 w-40 rounded-lg object-cover" />
@@ -334,6 +352,7 @@ export const CreatePage = () => {
                             </>
                         )}
                         <input
+                            id="nft-image"
                             type="file"
                             accept="image/*"
                             onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
@@ -344,8 +363,9 @@ export const CreatePage = () => {
                 </div>
 
                 <div>
-                    <label className="mb-2 block text-xs uppercase tracking-wider text-white/40">Name</label>
+                    <label htmlFor="nft-name" className="mb-2 block text-xs uppercase tracking-wider text-white/40">Name</label>
                     <input
+                        id="nft-name"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         disabled={inCheckout}
@@ -355,8 +375,9 @@ export const CreatePage = () => {
                 </div>
 
                 <div>
-                    <label className="mb-2 block text-xs uppercase tracking-wider text-white/40">Description</label>
+                    <label htmlFor="nft-description" className="mb-2 block text-xs uppercase tracking-wider text-white/40">Description</label>
                     <textarea
+                        id="nft-description"
                         value={description}
                         onChange={(e) => setDescription(e.target.value)}
                         disabled={inCheckout}
@@ -366,8 +387,9 @@ export const CreatePage = () => {
                 </div>
 
                 <div>
-                    <label className="mb-2 block text-xs uppercase tracking-wider text-white/40">Category</label>
+                    <label htmlFor="nft-category" className="mb-2 block text-xs uppercase tracking-wider text-white/40">Category</label>
                     <select
+                        id="nft-category"
                         value={category}
                         onChange={(e) => setCategory(e.target.value as Category)}
                         disabled={inCheckout}
@@ -388,7 +410,17 @@ export const CreatePage = () => {
                 {state.kind === 'error' && (
                     <div className="flex items-start gap-2 rounded-xl border border-red-500/25 bg-red-500/[0.07] p-3.5 text-sm text-white" role="status">
                         <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                        {state.message}
+                        <span>
+                            {state.message}
+                            {state.paymentId && (
+                                <span className="mt-1 block text-[11px] text-white/45">
+                                    Payment reference{' '}
+                                    <code className="font-mono text-white/70">{state.paymentId}</code>. Your
+                                    payment is safe and the mint is still being retried — quote this
+                                    reference if you need to contact support. Do not pay again.
+                                </span>
+                            )}
+                        </span>
                     </div>
                 )}
                 {state.kind === 'done' && (
@@ -427,7 +459,9 @@ export const CreatePage = () => {
                                             explorerUrl: signature ? ui.explorerTx(signature) : undefined,
                                         })
                                     }
-                                    onFailed={(message) => setState({ kind: 'error', message })}
+                                    onFailed={(message) =>
+                                        setState({ kind: 'error', message, paymentId: state.paymentId })
+                                    }
                                 />
                             </Elements>
                         ) : (
@@ -440,7 +474,7 @@ export const CreatePage = () => {
                     </div>
                 )}
 
-                {!inCheckout && state.kind !== 'done' && (
+                {!inCheckout && state.kind !== 'done' && !chargedAlready && (
                     address ? (
                         <button
                             onClick={start}
