@@ -10,7 +10,7 @@ import { api, type Chain, type Category, type PriceBreakdown as Breakdown } from
 import { CHAIN_UI, CATEGORIES } from '@/lib/chain-ui'
 import { ChainMark } from '@/components/ChainBadge'
 import { NFT_ABI } from '@/lib/evm-abi'
-import { describeError } from '@/lib/solana-tx'
+import { describeError, signAndSend } from '@/lib/solana-tx'
 import { ConnectForChain } from '@/components/ConnectForChain'
 import { PriceBreakdown } from '@/components/PriceBreakdown'
 
@@ -201,9 +201,24 @@ export const CreatePage = () => {
         enabled: chain === 'ETHEREUM',
     })
 
+    // Which rails the backend says are actually live. Asking rather than assuming is what
+    // lets this page be deployed before Stripe is configured: a build that always routed
+    // Solana through a card would have broken minting the moment it shipped, because the
+    // worker answers 503 without a key.
+    const { data: chainInfo } = useQuery({
+        queryKey: ['chains'],
+        queryFn: () => api.chains(),
+        staleTime: 5 * 60_000,
+    })
+    const stripeLive = chainInfo?.features?.stripePayments ?? false
+    const walletMintLive = chainInfo?.features?.directCrypto ?? false
+
     const address = chain === 'SOLANA' ? solana.publicKey?.toBase58() : evm.address
     const ui = CHAIN_UI[chain]
-    const payByCard = chain === 'SOLANA'
+    // Card is the intended path for Solana, but only where it can actually work. Where it
+    // cannot and the wallet route is still open, mint the old way rather than dead-end.
+    const payByCard = chain === 'SOLANA' && stripeLive
+    const solanaUnavailable = chain === 'SOLANA' && !stripeLive && !walletMintLive
 
     const pickFile = (f: File | null) => {
         setFile(f)
@@ -253,6 +268,19 @@ export const CreatePage = () => {
                 const indexed = await api.evmIndexToken(hash)
 
                 setState({ kind: 'done', assetId: indexed.assetId, explorerUrl: ui.explorerTx(hash) })
+                return
+            }
+
+            if (!payByCard) {
+                // Card payments are not configured, so mint the way this app always did:
+                // the backend builds an unsigned transaction and the wallet pays its own gas.
+                setState({ kind: 'busy', step: 'Building the mint transaction…' })
+                const { transaction, mint: mintAddress } = await api.solanaMint({
+                    uri: metadataUri, name, owner: address,
+                })
+                setState({ kind: 'busy', step: 'Approve the mint in your wallet…' })
+                const { signature } = await signAndSend(solana, transaction)
+                setState({ kind: 'done', assetId: mintAddress, explorerUrl: ui.explorerTx(signature) })
                 return
             }
 
@@ -307,7 +335,9 @@ export const CreatePage = () => {
             <p className="mt-2 text-sm text-white/50">
                 {payByCard
                     ? 'Pay by card. Kumele mints on Solana devnet and covers the network cost, which is itemised at checkout.'
-                    : 'Mint on Base Sepolia. You sign and pay your own network fee.'}
+                    : solanaUnavailable
+                        ? 'Minting on Solana is paused while payments move to card.'
+                        : 'You sign and pay your own network fee.'}
             </p>
 
             <div className="mt-6 space-y-5 rounded-2xl border border-white/[0.07] bg-[#0e1018] p-6">
@@ -340,7 +370,9 @@ export const CreatePage = () => {
                     <p className="mt-2 text-[11px] text-white/35">
                         {payByCard
                             ? 'Solana mints are paid for by card.'
-                            : 'Base mints are signed and paid from your own wallet.'}
+                            : solanaUnavailable
+                                ? 'Card payments are not configured for this deployment yet.'
+                                : `${CHAIN_UI[chain].label} mints are signed and paid from your own wallet.`}
                     </p>
                 </div>
 
@@ -478,7 +510,7 @@ export const CreatePage = () => {
                     </div>
                 )}
 
-                {!inCheckout && state.kind !== 'done' && !chargedAlready && (
+                {!inCheckout && state.kind !== 'done' && !chargedAlready && !solanaUnavailable && (
                     address ? (
                         <button
                             onClick={start}
