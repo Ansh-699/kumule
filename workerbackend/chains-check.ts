@@ -7,7 +7,7 @@
 import {
     parseChain, isChain, chainFromAddress, isValidAddress, isSolanaAddress, normalizeAddress,
     makeAssetId, parseAssetId, fromBaseUnits, toBaseUnits, CHAIN_CONFIG,
-    solanaRpcChain, SOLANA_RPC_FALLBACKS,
+    solanaRpcChain, SOLANA_RPC_FALLBACKS, solanaRpc,
 } from './src/chains'
 
 let failures = 0
@@ -143,6 +143,22 @@ eq('no duplicates when the configured one is also a fallback',
     solanaRpcChain({ SOLANA_RPC_URL: SOLANA_RPC_FALLBACKS[0] } as any).length, SOLANA_RPC_FALLBACKS.length)
 eq('every entry is an https url',
     solanaRpcChain({} as any).every((u) => u.startsWith('https://')), true)
+
+// A devnet-only deployment must never be pointed at real money, and the only thing separating
+// the two networks is a hostname - a provider key is usually valid on both. This was a real
+// paste, not a hypothetical.
+eq('a mainnet endpoint is dropped from the chain',
+    solanaRpcChain({ SOLANA_RPC_URL: 'https://mainnet.helius-rpc.com/?api-key=x' } as any)
+        .some((u) => /mainnet/i.test(u)), false)
+eq('and the deployment still has somewhere to talk to',
+    solanaRpcChain({ SOLANA_RPC_URL: 'https://mainnet.helius-rpc.com/?api-key=x' } as any).length,
+    SOLANA_RPC_FALLBACKS.length)
+eq('solanaRpc never returns a mainnet url either',
+    /mainnet/i.test(solanaRpc({ SOLANA_RPC_URL: 'https://api.mainnet-beta.solana.com' } as any)), false)
+// The devnet host of the same provider is fine.
+eq('a devnet provider url is kept',
+    solanaRpcChain({ SOLANA_RPC_URL: 'https://devnet.helius-rpc.com/?api-key=x' } as any)[0],
+    'https://devnet.helius-rpc.com/?api-key=x')
 
 console.log('\nconfig:')
 eq('SOL currency', CHAIN_CONFIG.SOLANA.currency, 'SOL')

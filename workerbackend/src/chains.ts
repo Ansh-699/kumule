@@ -229,9 +229,20 @@ export const ceilDiv = (a: bigint, b: bigint): bigint => (a + b - 1n) / b
 
 // --- rpc ---
 
+/**
+ * Anything that names mainnet. This repo is devnet-only, top to bottom.
+ *
+ * Not hypothetical: a mainnet Helius URL was pasted into this configuration once already.
+ * Had it been accepted, the mint would have tried to create assets on mainnet - paying with
+ * real SOL from a wallet that holds none, so every order would fail - and every lookup of an
+ * existing devnet asset would have come back empty, emptying the marketplace. A provider key
+ * is usually valid on both networks, so the only thing separating the two is the hostname,
+ * which makes it exactly the sort of mistake worth refusing in code rather than in a comment.
+ */
+const MAINNET_URL = /mainnet|api\.mainnet-beta\.solana\.com/i
+
 /** Solana RPC, falling back to public devnet like every other call site in the worker. */
-export const solanaRpc = (env: CloudflareBindings): string =>
-    env.SOLANA_RPC_URL || SOLANA_RPC_FALLBACKS[0]
+export const solanaRpc = (env: CloudflareBindings): string => solanaRpcChain(env)[0]
 
 /**
  * Endpoints to try, in order, when a read fails.
@@ -247,11 +258,22 @@ export const SOLANA_RPC_FALLBACKS = [
     'https://api.devnet.solana.com',
 ] as const
 
-/** The configured endpoint first, then the fallbacks, with no duplicates. */
+/**
+ * The configured endpoint first, then the fallbacks, with no duplicates and no mainnet.
+ *
+ * A mainnet endpoint is dropped rather than used, loudly. Silently honouring it would point
+ * a devnet-only deployment at real money.
+ */
 export const solanaRpcChain = (env: CloudflareBindings): string[] => {
     const configured = env.SOLANA_RPC_URL
+    if (configured && MAINNET_URL.test(configured)) {
+        console.error(
+            'SOLANA_RPC_URL names mainnet and is being ignored: this deployment is devnet-only. ' +
+            'The same provider key normally works on the devnet host - use that instead.'
+        )
+    }
     const chain = configured ? [configured, ...SOLANA_RPC_FALLBACKS] : [...SOLANA_RPC_FALLBACKS]
-    return [...new Set(chain)]
+    return [...new Set(chain)].filter((u) => !MAINNET_URL.test(u))
 }
 
 /**
