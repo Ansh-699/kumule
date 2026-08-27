@@ -43,9 +43,25 @@ ADMIN_API_KEY="generate-a-long-random-value"
 
 # --- stripe rail --------------------------------------------------------------
 
-# Card payments. /api/v1/payments/intent 503s without the secret key, and the webhook
-# 503s without the signing secret - neither falls back to accepting anything.
-# STRIPE_SECRET_KEY="sk_test_..."
+# Card payments. /api/v1/payments/intent 503s without a key, and the webhook 503s
+# without the signing secret - neither falls back to accepting anything.
+#
+# Use a RESTRICTED key (rk_...), not a secret key. Stripe's own guidance is to stop
+# using sk_ keys for new integrations, and this one needs exactly two permissions:
+#
+#     PaymentIntents  write     POST /v1/payment_intents
+#     Refunds         write     POST /v1/refunds
+#
+# Nothing else. No customers, no balance, no products, no reads. A key scoped that
+# narrowly cannot drain an account even if the worker is fully compromised. The code
+# sends whatever is here as a Bearer token, so rk_ and sk_ both work unchanged.
+#
+# Optional hardening: attach an Access Policy in the Stripe dashboard restricting the
+# key to Cloudflare's ASN, so it is useless from anywhere but the worker.
+# STRIPE_SECRET_KEY="rk_test_..."
+
+# From the Webhooks section of the dashboard, NOT the API keys page - a signing secret
+# is per-endpoint and is not an API key. Rotating one does not rotate the other.
 # STRIPE_WEBHOOK_SECRET="whsec_..."
 
 # Optional API version pin. Unset means the account default, which is stable per account;

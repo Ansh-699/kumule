@@ -13,6 +13,7 @@
 //
 // Pure: no network, no DB, no Stripe account.
 
+import { readFileSync } from 'node:fs'
 import { formEncode, verifyWebhookSignature, signPayloadForTest } from './src/stripe'
 
 let failures = 0
@@ -156,6 +157,29 @@ const run = async () => {
     const v0Only = await verifyWebhookSignature(PAYLOAD, `t=${TS},v0=${EXPECTED_HEX}`, SECRET, 300, AT)
     if (!v0Only.ok) ok('a v0-only header is rejected')
     else fail('a v0-only header verified')
+
+    console.log('')
+    console.log('the key never travels anywhere except the Authorization header:')
+
+    // Stripe's own errors quote the key back at you - "Invalid API Key provided:
+    // sk_test_****...only" - so any code path that forwards a Stripe message to a caller is
+    // putting key material in a response body. This reads the source rather than the runtime,
+    // because the failure is a line of code, not a value.
+    const paymentsSrc = readFileSync(new URL('./src/payments.ts', import.meta.url).pathname, 'utf8')
+    const forwards = /details:\s*(intent|refund)\.message/.test(paymentsSrc)
+    if (!forwards) ok('no handler forwards a Stripe error message to the client')
+    else fail('a Stripe error message is returned to the client', 'it can contain key material')
+
+    const stripeSrc = readFileSync(new URL('./src/stripe.ts', import.meta.url).pathname, 'utf8')
+    const usesKey = [...stripeSrc.matchAll(/secretKey/g)].length
+    const inAuthHeader = /Authorization: `Bearer \$\{secretKey\}`/.test(stripeSrc)
+    if (inAuthHeader) ok('the key is used in the Authorization header')
+    else fail('the key is not where it was expected')
+    // Three: the read, the unset guard, and the header. A fourth is a new place it can escape.
+    if (usesKey <= 3) ok(`the key is referenced ${usesKey} times, all accounted for`)
+    else fail(`the key is referenced ${usesKey} times`, 'check every new use')
+    if (!/console\.(log|error|warn)\([^)]*secretKey/.test(stripeSrc)) ok('the key is never logged')
+    else fail('the key appears in a log statement')
 
     console.log('')
     console.log('the test signer agrees with the verifier:')

@@ -66,7 +66,7 @@ what happens when it is unset. They are the reference; this table is a summary.
 | `MINT_FEE_LAMPORTS`, `MINT_FEE_TREASURY` | no | Minting is free; caller pays their own network fee |
 | `MEDAL_VAULT_PRIVATE_KEY` | no | Medal minting and claiming answer 503 |
 | `PUBLIC_URL` | no | Asset URLs derived from the request host |
-| `STRIPE_SECRET_KEY` | for payments | `/api/v1/payments/intent` answers 503 |
+| `STRIPE_SECRET_KEY` | for payments | `/api/v1/payments/intent` answers 503. Use a **restricted** key (`rk_...`) scoped to PaymentIntents:write and Refunds:write only — see below |
 | `STRIPE_WEBHOOK_SECRET` | for payments | The webhook answers 503 — it never falls back to accepting unsigned bodies |
 | `STRIPE_API_VERSION` | no | The account default; a wrong pin breaks every call, so it is not guessed at |
 | `MINT_ASSET_SEED` | for minting | Mint jobs refuse to run. A derivation root, not a rotatable secret |
@@ -169,6 +169,27 @@ terminal state and the payment is refunded automatically. `GET /api/admin/paymen
 a `stranded` count for anything paid but unminted, and
 `POST /api/admin/payments/:id/refund` is the manual lever. It refuses to refund a mint that
 actually succeeded.
+
+### The Stripe key to use
+
+Stripe's guidance is not to use secret keys (`sk_...`) for new integrations. This one needs
+exactly two permissions and nothing else:
+
+| Resource | Permission | Used by |
+|---|---|---|
+| PaymentIntents | write | `POST /v1/payment_intents` at checkout |
+| Refunds | write | `POST /v1/refunds` when a mint can never succeed |
+
+No customers, no balance, no products, no read scopes. Create a restricted key with just
+those two and put it in `STRIPE_SECRET_KEY` — the worker sends whatever is there as a Bearer
+token, so `rk_` works unchanged. A key scoped this narrowly cannot drain the account even if
+the worker is fully compromised.
+
+Optionally attach an Access Policy restricting the key to Cloudflare's ASN, which makes it
+useless from anywhere but the worker.
+
+The **webhook signing secret is not an API key**. It lives under Webhooks in the dashboard,
+is per-endpoint, and rotating one does not rotate the other.
 
 ### Operational notes
 

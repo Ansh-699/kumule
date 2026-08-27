@@ -163,7 +163,19 @@ export const createIntent = async (c: Context<{ Bindings: CloudflareBindings }>)
                     data: { status: 'FAILED', failureReason: intent.message.slice(0, 500) },
                 })
             )
-            return c.json({ error: 'Could not start the payment', details: intent.message }, 502)
+            // Stripe's own message is deliberately NOT forwarded. It is a third party talking
+            // about our credentials: a misconfigured key makes it read "Invalid API Key
+            // provided: sk_test_****...only", which is key material - masked, but ours - in a
+            // response body sent to a browser. It is kept in the logs and on the row, where
+            // support can read it, and the caller gets a payment id to quote instead.
+            //
+            // The other `details: e?.message` returns in this file are our own exception text
+            // and follow the pattern the rest of the repo uses. This one is different in kind.
+            console.error(`[PAYMENTS] stripe refused intent for ${payment.id}: ${intent.message}`)
+            return c.json(
+                { error: 'Could not start the payment. Please try again.', paymentId: payment.id },
+                502
+            )
         }
 
         await withPrisma(connectionString, (prisma) =>
