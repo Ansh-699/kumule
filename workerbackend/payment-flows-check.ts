@@ -24,6 +24,8 @@ import { getFeeQuote, CORE_CREATE_FEE_LAMPORTS } from './src/web3fees'
 import { createIntent, getPayment, stripeWebhook, paymentIntentIdFrom } from './src/payments'
 import { signPayloadForTest } from './src/stripe'
 import { withPrisma } from './src/db'
+import { runMintJob, sweepMintJobs } from './src/mintjob'
+import { MAX_MINT_ATTEMPTS } from './src/config'
 
 let failures = 0
 const ok = (label: string) => console.log(`  ok   ${label}`)
@@ -84,6 +86,7 @@ const startStubRpc = async () => {
 const stubStripe = () => {
     const real = globalThis.fetch
     const created: { amount: number; idempotencyKey: string | null; metadata: Record<string, string> }[] = []
+    const refunds: { paymentIntent: string; idempotencyKey: string | null }[] = []
     let nextId = 0
     let failNext = false
 
@@ -99,6 +102,18 @@ const stubStripe = () => {
         }
 
         const body = new URLSearchParams(String(init?.body ?? ''))
+
+        if (url.includes('/refunds')) {
+            refunds.push({
+                paymentIntent: body.get('payment_intent') ?? '',
+                idempotencyKey: (init?.headers?.['Idempotency-Key'] as string) ?? null,
+            })
+            return new Response(
+                JSON.stringify({ id: `re_stub_${refunds.length}`, status: 'succeeded', amount: 249 }),
+                { status: 200, headers: { 'Content-Type': 'application/json' } }
+            )
+        }
+
         const metadata: Record<string, string> = {}
         for (const [k, v] of body.entries()) {
             const m = /^metadata\[(.+)\]$/.exec(k)
@@ -116,7 +131,7 @@ const stubStripe = () => {
         )
     }) as typeof fetch
 
-    return { created, restore: () => { globalThis.fetch = real }, declineNext: () => { failNext = true } }
+    return { created, refunds, restore: () => { globalThis.fetch = real }, declineNext: () => { failNext = true } }
 }
 
 const run = async () => {
@@ -498,6 +513,69 @@ const run = async () => {
         }))
         eq('the payment is failed', declined.payment.status, 'FAILED')
         eq('the job is failed, not pending', declined.job.status, 'FAILED')
+
+        console.log('')
+        console.log('a mint that can never succeed gives the money back:')
+
+        // The path that exists so nobody is charged for something undeliverable - and until
+        // now the only one never actually executed. A job past its attempt cap must refund
+        // rather than retry forever, because retrying forever is indistinguishable from
+        // keeping the money.
+        const dq = (await (await app.request('/quote?operation=nft_mint&chain=solana', {}, env)).json()) as any
+        const doomed = (await (await post('/intent', {
+            quoteId: dq.quote_id, ownerAddress: OWNER, name: 'Doomed',
+            metadataUri: 'https://example.invalid/doomed.json',
+        })).json()) as any
+        const doomedPayment: any = await inspect((p: any) => p.payment.findUnique({ where: { id: doomed.paymentId } }))
+
+        // Deliberately NOT driven through the webhook here. A succeeded webhook kicks off a
+        // detached mint, which then races this call for the claim - and wins about half the
+        // time, so the assertion below would report whichever caller lost rather than what
+        // the code did. That race is correct behaviour (only one worker ever proceeds, which
+        // the devnet concurrency test proves) but it makes for a useless test.
+        //
+        // Already past the attempt cap, which is the shape of a vault that cannot pay: the
+        // mint has been tried and cannot work.
+        await withPrisma(POSTGRES_URL, (p: any) =>
+            p.payment.update({ where: { id: doomed.paymentId }, data: { status: 'PAID', paidAt: new Date() } })
+        )
+        await withPrisma(POSTGRES_URL, (p: any) =>
+            p.mintJob.updateMany({
+                where: { paymentId: doomed.paymentId },
+                data: { status: 'PENDING', attempts: MAX_MINT_ATTEMPTS + 1, lastError: 'vault unfunded' },
+            })
+        )
+        const doomedJob: any = await inspect((p: any) => p.mintJob.findFirst({ where: { paymentId: doomed.paymentId } }))
+
+        const refundsBefore = stripe.refunds.length
+        const outcome = await runMintJob(env, POSTGRES_URL, doomedJob.id)
+        eq('the job refunds instead of retrying', outcome, 'refunded')
+        eq('exactly one refund was issued', stripe.refunds.length - refundsBefore, 1)
+
+        const issued = stripe.refunds[stripe.refunds.length - 1]
+        eq('against the right payment intent', issued.paymentIntent, doomedPayment.stripePaymentIntentId)
+        // Derived, so a sweep racing an admin refunds once rather than twice.
+        eq('with a derived idempotency key', issued.idempotencyKey, `refund:${doomed.paymentId}`)
+
+        const settled: any = await inspect(async (p: any) => ({
+            payment: await p.payment.findUnique({ where: { id: doomed.paymentId } }),
+            job: await p.mintJob.findUnique({ where: { id: doomedJob.id } }),
+            nfts: await p.nft.count({ where: { name: 'Doomed' } }),
+        }))
+        eq('the payment reads refunded', settled.payment.status, 'REFUNDED')
+        eq('the job reads refunded', settled.job.status, 'REFUNDED')
+        eq('the refund id is recorded', typeof settled.payment.stripeRefundId, 'string')
+        eq('the reason is kept for support', String(settled.payment.failureReason).length > 0, true)
+        eq('and nothing was minted', settled.nfts, 0)
+
+        // A sweep must not pick a refunded job back up. Scoped to THIS job: the table still
+        // holds pending jobs from earlier sections, and asserting the sweep did nothing at
+        // all would be asserting something about them instead.
+        await sweepMintJobs(env, POSTGRES_URL)
+        const afterSweep: any = await inspect((p: any) => p.mintJob.findUnique({ where: { id: doomedJob.id } }))
+        eq('the refunded job is untouched by a sweep', afterSweep.status, 'REFUNDED')
+        eq('its attempt count did not move', afterSweep.attempts, settled.job.attempts)
+        eq('and no second refund is issued', stripe.refunds.length - refundsBefore, 1)
 
         console.log('')
         console.log('the payment intent is found wherever the event actually puts it:')
