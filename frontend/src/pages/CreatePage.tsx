@@ -244,7 +244,12 @@ export const CreatePage = () => {
 
             // Solana: priced, then paid for by card. Nothing is minted until Stripe confirms.
             setState({ kind: 'busy', step: 'Pricing the mint…' })
-            const quote = await api.feeQuote({ operation: 'nft_mint', chain: 'solana', quantity: 1 })
+            // The metadata is already uploaded, so the exact on-chain size is known and the
+            // quote can price this asset instead of the largest one it might have been.
+            const quote = await api.feeQuote({
+                operation: 'nft_mint', chain: 'solana', quantity: 1,
+                name, uri: metadataUri,
+            })
 
             setState({ kind: 'busy', step: 'Preparing checkout…' })
             const intent = await api.createPaymentIntent({

@@ -64,15 +64,36 @@ const priorityLamports = (microLamportsPerCu: number): bigint =>
 /**
  * Bytes to reserve when asking the cluster for a rent-exempt minimum.
  *
- * A real devnet asset with a 10-character name and a 32-character URI measured 117 bytes, so
- * the fixed part is about 75 and the rest is whatever the name and URI cost. At quote time
- * neither is known - the contract is operation + chain + quantity - so this allows for a
- * 40-character name and a 120-character R2 URL.
+ * Solved, not guessed. Two real devnet assets give two equations:
  *
- * Erring high is the correct direction: over-estimating costs the buyer a fraction of a cent,
- * while under-estimating costs Kumele the difference on every mint, forever.
+ *     117 bytes total - name 10  - uri 32  = 75
+ *     303 bytes total - name 37  - uri 191 = 75
+ *
+ * so assetBytes = 75 + len(name) + len(uri), counted in UTF-8 BYTES. Characters would be
+ * wrong: an emoji in a name is one character and four bytes, and the chain stores bytes.
  */
-const ASSET_ACCOUNT_BYTES = 200
+export const MPL_CORE_ASSET_FIXED_BYTES = 75
+
+/** Longest name and URI createIntent will accept, and therefore the most a quote must cover. */
+export const MAX_NAME_BYTES = 128
+export const MAX_URI_BYTES = 200
+
+/**
+ * What to assume when the caller does not say how big the asset is.
+ *
+ * A flat guess is wrong in both directions - it over-charges a short asset and under-charges
+ * a long one, and under-charging is money Kumele never gets back. So this is the worst case
+ * createIntent permits, and callers who know their asset (the frontend uploads its metadata
+ * before asking for a price) send the real sizes and get charged for the real thing.
+ */
+const DEFAULT_ASSET_BYTES = MPL_CORE_ASSET_FIXED_BYTES + MAX_NAME_BYTES + MAX_URI_BYTES
+
+/** Bytes an asset account needs for a given name and URI. */
+export const assetBytesFor = (nameBytes: number, uriBytes: number): number =>
+    MPL_CORE_ASSET_FIXED_BYTES + nameBytes + uriBytes
+
+/** UTF-8 byte length, which is what the chain actually stores. */
+export const utf8Bytes = (value: string): number => new TextEncoder().encode(value).length
 
 export type FeeSource =
     | 'helius_priority_fee_estimate'
@@ -110,6 +131,8 @@ const estimatePriorityFee = async (
 }
 
 export type MintFeeQuote = {
+    /** Size this quote paid rent for. createIntent refuses an asset larger than this. */
+    assetBytes: number
     operation: 'nft_mint'
     chain: 'solana'
     quantity: number
@@ -134,20 +157,21 @@ export const MAX_QUANTITY = 50
  */
 export const quoteMintFee = async (
     env: CloudflareBindings,
-    quantity = 1
+    quantity = 1,
+    assetBytes: number = DEFAULT_ASSET_BYTES
 ): Promise<MintFeeQuote> => {
     const pricing = mintPricing(env)
 
     const [priority, rentFromChain, rate] = await Promise.all([
         estimatePriorityFee(env),
-        rentExemptLamports(env, ASSET_ACCOUNT_BYTES),
+        rentExemptLamports(env, assetBytes),
         getSolEurRate(),
     ])
 
     // (128 + bytes) * 6960 is the runtime's own formula, used only when the cluster will not
     // answer. It gives 890,880 for an empty account and 2,039,280 for a 165-byte token
     // account, both of which are the documented figures.
-    const rent = rentFromChain ?? BigInt(128 + ASSET_ACCOUNT_BYTES) * 6_960n
+    const rent = rentFromChain ?? BigInt(128 + assetBytes) * 6_960n
 
     const perMint =
         LAMPORTS_PER_SIGNATURE * SIGNATURES_PER_MINT +
@@ -165,6 +189,7 @@ export const quoteMintFee = async (
     const source: FeeSource = rentFromChain === null ? 'static_fallback' : priority.source
 
     return {
+        assetBytes,
         operation: 'nft_mint',
         chain: 'solana',
         quantity,
@@ -234,11 +259,33 @@ export const getFeeQuote = async (c: Context<{ Bindings: CloudflareBindings }>) 
         return c.json({ error: `quantity must be between 1 and ${MAX_QUANTITY}` }, 400)
     }
 
+    // Optional, and the difference between a guess and a price. A caller that already knows
+    // what it is minting - the frontend uploads its metadata before asking - sends the sizes
+    // and is charged for that asset. Everyone else gets the worst case createIntent allows,
+    // because the only safe assumption is the expensive one.
+    const nameBytesRaw = c.req.query('nameBytes')
+    const uriBytesRaw = c.req.query('uriBytes')
+    let assetBytes: number | undefined
+    if (nameBytesRaw !== undefined || uriBytesRaw !== undefined) {
+        if (!/^\d+$/.test(nameBytesRaw ?? '') || !/^\d+$/.test(uriBytesRaw ?? '')) {
+            return c.json({ error: 'nameBytes and uriBytes must both be non-negative integers' }, 400)
+        }
+        const nameBytes = Number(nameBytesRaw)
+        const uriBytes = Number(uriBytesRaw)
+        if (nameBytes > MAX_NAME_BYTES || uriBytes > MAX_URI_BYTES) {
+            return c.json(
+                { error: `nameBytes must be at most ${MAX_NAME_BYTES} and uriBytes at most ${MAX_URI_BYTES}` },
+                400
+            )
+        }
+        assetBytes = assetBytesFor(nameBytes, uriBytes)
+    }
+
     const connectionString = getConnectionString(c.env)
     if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
 
     try {
-        const quote = await quoteMintFee(c.env, quantity)
+        const quote = await quoteMintFee(c.env, quantity, assetBytes)
         const row = await withPrisma(connectionString, (prisma) =>
             prisma.feeQuote.create({
                 data: {
@@ -247,6 +294,7 @@ export const getFeeQuote = async (c: Context<{ Bindings: CloudflareBindings }>) 
                     quantity: quote.quantity,
                     currency: quote.currency,
                     networkFeeLamports: quote.networkFeeLamports,
+                    assetBytes: quote.assetBytes,
                     rateScaled: quote.rate.scaled,
                     estimatedFeeMinor: quote.estimatedFeeMinor,
                     source: quote.source,

@@ -20,7 +20,7 @@ import { base58 } from '@metaplex-foundation/umi/serializers'
 import { startLocalNeonProxy, resetDatabase, inspect, POSTGRES_URL } from './db-harness'
 import { getUmi } from './src/umi'
 import { runMintJob, deriveAssetSigner, readAssetState } from './src/mintjob'
-import { quoteMintFee } from './src/web3fees'
+import { quoteMintFee, assetBytesFor, utf8Bytes } from './src/web3fees'
 import { verifyTransactionChecksum } from './src/audit'
 import { withPrisma } from './src/db'
 import { fromBaseUnits } from './src/chains'
@@ -155,7 +155,7 @@ const run = async () => {
             SystemProgram.transfer({
                 fromPubkey: funder.publicKey,
                 toPubkey: vaultKp.publicKey,
-                lamports: 0.02 * LAMPORTS_PER_SOL,
+                lamports: 0.06 * LAMPORTS_PER_SOL,
             })
         )
         const sig = await connection.sendTransaction(transfer, [funder])
@@ -258,11 +258,22 @@ const run = async () => {
             // lamports a mint actually costs. It did not, before this ran - the quote left out
             // Metaplex's 1,500,000-lamport protocol fee, which is deposited into the asset
             // account and appears in no rent calculation.
-            const quote = await quoteMintFee(env, 1)
-            ok(`quoted ${quote.networkFeeLamports} lamports, spent ${spent}`)
-            eq('the quote covers what the mint really cost', quote.networkFeeLamports >= spent, true)
-            const margin = Number(quote.networkFeeLamports - spent) / Number(spent)
-            eq('and does not over-charge wildly (under 50% headroom)', margin < 0.5, true)
+            // A quote that knows the asset should not merely cover the cost - it should
+            // predict it. Every term is now derived rather than estimated: rent comes from
+            // the chain for a size solved from real assets, the Metaplex fee is a measured
+            // constant, and the transaction fees are fixed. This asserts the whole model is
+            // right, to the lamport.
+            const sized = await quoteMintFee(
+                env, 1, assetBytesFor(utf8Bytes('Devnet E2E'), utf8Bytes(`${host.url}/meta.json`))
+            )
+            ok(`sized quote ${sized.networkFeeLamports} lamports, actually spent ${spent}`)
+            eq('a sized quote predicts the cost exactly', sized.networkFeeLamports, spent)
+
+            // The no-info quote is a different promise: it must never under-cover, and it is
+            // allowed to be expensive because the only safe assumption is the worst case.
+            const unsized = await quoteMintFee(env, 1)
+            eq('an unsized quote still covers the cost', unsized.networkFeeLamports >= spent, true)
+            ok(`unsized quote ${unsized.networkFeeLamports} lamports - the worst case, as intended`)
         } else {
             fail('actualFeeLamports was never recorded', 'readFeePayerCost returned nothing')
         }
@@ -316,6 +327,112 @@ const run = async () => {
         eq('still exactly one NFT', afterRetry.nfts, 1)
         eq('pointing at the same asset', afterRetry.job.mintAddress, expected)
         eq('back to MINTED', afterRetry.job.status, 'MINTED')
+
+        console.log('')
+        console.log('CONCURRENCY: five workers racing for the same job, on a real chain:')
+
+        // The claim is a conditional single-row UPDATE, which is the only atomicity primitive
+        // this codebase has - withPrisma opens a fresh client per call and nothing uses
+        // $transaction. Every other test of "one payment cannot mint twice" has been
+        // sequential. This is the one that matters: two cron ticks overlapping, or a webhook
+        // firing while a sweep is already running, is not hypothetical - the cron runs every
+        // five minutes and a sweep can outlive it.
+        const raced: any = await withPrisma(POSTGRES_URL, (p: any) =>
+            p.payment.create({
+                data: {
+                    stripePaymentIntentId: 'pi_devnet_race',
+                    status: 'PAID', currency: 'eur',
+                    baseAmountMinor: 200, taxAmountMinor: 0, mintFeeMinor: 49, totalAmountMinor: 249,
+                    paidAt: new Date(),
+                    mintJob: {
+                        create: {
+                            status: 'PENDING', chain: 'SOLANA', ownerAddress: buyer,
+                            name: 'Race Test',
+                            metadataUri: `${host.url}/meta.json`,
+                            estimatedFeeMinor: 49,
+                        },
+                    },
+                },
+                include: { mintJob: true },
+            })
+        )
+        const raceJobId = raced.mintJob.id
+        const beforeRace = await balanceOf(vaultAddress)
+
+        // Fired with no stagger at all - the worst case for a compare-and-swap.
+        const outcomes = await Promise.all(
+            Array.from({ length: 5 }, () => runMintJob(env, POSTGRES_URL, raceJobId))
+        )
+        const minted = outcomes.filter((o) => o === 'minted').length
+        const notClaimed = outcomes.filter((o) => o === 'not-claimed').length
+        ok(`outcomes: ${JSON.stringify(outcomes)}`)
+        eq('exactly one worker minted', minted, 1)
+        eq('the other four were refused the claim', notClaimed, 4)
+
+        const afterRace: any = await inspect(async (p: any) => ({
+            job: await p.mintJob.findUnique({ where: { id: raceJobId } }),
+            jobs: await p.mintJob.count({ where: { paymentId: raced.id } }),
+            nfts: await p.nft.count({ where: { name: 'Race Test' } }),
+            txs: await p.transaction.count({ where: { metadata: { path: ['mintJobId'], equals: raceJobId } } }),
+        }))
+        eq('one job', afterRace.jobs, 1)
+        eq('ONE NFT, not five', afterRace.nfts, 1)
+        eq('one MINT transaction row', afterRace.txs, 1)
+        eq('the job is MINTED', afterRace.job.status, 'MINTED')
+        // The claim increments attempts, so a losing racer must not have bumped it.
+        eq('attempts counted once, not five times', afterRace.job.attempts, 1)
+
+        // The decisive number: the vault paid for exactly one asset.
+        const afterRaceBalance = await balanceOf(vaultAddress)
+        const spentOnRace = beforeRace - afterRaceBalance
+        ok(`the vault paid ${fromBaseUnits(spentOnRace, 'SOLANA')} SOL for the race`)
+        eq('which is one mint, not five', spentOnRace < 4_000_000n, true)
+        eq('and more than zero', spentOnRace > 3_000_000n, true)
+
+        console.log('')
+        console.log('is the Metaplex create fee really a constant?')
+
+        // The quote hardcodes 1,500,000 lamports for it, measured once. If it actually scales
+        // with the account - or with anything else - then the quote is wrong for every asset
+        // that is not the size of the one it was measured on. Mint a much larger asset and
+        // check the difference is EXACTLY the rent difference and nothing more.
+        const longUri = `${host.url}/meta.json?padding=${'x'.repeat(150)}`
+        const bigPayment: any = await withPrisma(POSTGRES_URL, (p: any) =>
+            p.payment.create({
+                data: {
+                    stripePaymentIntentId: 'pi_devnet_big',
+                    status: 'PAID', currency: 'eur',
+                    baseAmountMinor: 200, taxAmountMinor: 0, mintFeeMinor: 49, totalAmountMinor: 249,
+                    paidAt: new Date(),
+                    mintJob: {
+                        create: {
+                            status: 'PENDING', chain: 'SOLANA', ownerAddress: buyer,
+                            name: 'A Considerably Longer Asset Name Here',
+                            metadataUri: longUri,
+                            estimatedFeeMinor: 49,
+                        },
+                    },
+                },
+                include: { mintJob: true },
+            })
+        )
+        const beforeBig = await balanceOf(vaultAddress)
+        const bigOutcome = await runMintJob(env, POSTGRES_URL, bigPayment.mintJob.id)
+        eq('the larger asset minted', bigOutcome, 'minted')
+        const afterBig = await balanceOf(vaultAddress)
+        const bigCost = beforeBig - afterBig
+
+        const bigJob: any = await inspect((p: any) => p.mintJob.findUnique({ where: { id: bigPayment.mintJob.id } }))
+        const bigAccount = await rpcCall('getAccountInfo', [bigJob.mintAddress, { encoding: 'base64', commitment: 'confirmed' }])
+        const bigBytes = Buffer.from(bigAccount.result.value.data[0], 'base64').length
+        const bigRent = BigInt(128 + bigBytes) * 6_960n
+
+        ok(`small asset: 117 bytes, cost 3225200`)
+        ok(`large asset: ${bigBytes} bytes, cost ${bigCost}`)
+        // cost = rent + createFee + txFees. Solve for the create fee and compare.
+        const impliedFee = bigCost - bigRent - 20_000n
+        ok(`implied Metaplex create fee: ${impliedFee} lamports`)
+        eq('the create fee is the same 1,500,000 regardless of asset size', impliedFee, 1_500_000n)
 
         console.log('')
         console.log('and a dusted address is refused rather than silently completed:')

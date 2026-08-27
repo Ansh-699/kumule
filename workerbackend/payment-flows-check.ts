@@ -308,6 +308,43 @@ const run = async () => {
 
         // ------------------------------------------------------------------ webhook
         console.log('')
+        console.log('a quote cannot be spent on an asset bigger than it paid rent for:')
+
+        // A quote buys rent for an account of a known size. Minting something larger than
+        // that is the platform absorbing the difference on every such mint - so it is
+        // refused, not absorbed. Sized quotes make this reachable: ask for a tiny asset,
+        // then try to mint a large one against it.
+        const tinyQuoteRes = await app.request(
+            '/quote?operation=nft_mint&chain=solana&quantity=1&nameBytes=5&uriBytes=20', {}, env
+        )
+        const tinyQuote = (await tinyQuoteRes.json()) as any
+        eq('a sized quote is priced for that size', tinyQuoteRes.status, 200)
+
+        const tooBig = await post('/intent', {
+            quoteId: tinyQuote.quote_id,
+            ownerAddress: OWNER,
+            name: 'A name far longer than the five bytes that quote paid for',
+            metadataUri: 'https://example.invalid/a-considerably-longer-metadata-path/meta.json',
+        })
+        eq('minting a larger asset against it is refused', tooBig.status, 409)
+        eq('and says why', ((await tooBig.json()) as any).code, 'quote_too_small')
+
+        // Bytes, not characters: an emoji name that "fits" by length must not slip through.
+        const emojiRes = await post('/intent', {
+            quoteId: tinyQuote.quote_id, ownerAddress: OWNER,
+            name: '\u{1F680}\u{1F680}\u{1F680}\u{1F680}\u{1F680}\u{1F680}',
+            metadataUri: 'https://example.invalid/m.json',
+        })
+        eq('a six-character emoji name is measured as 24 bytes', emojiRes.status, 409)
+
+        // Over the hard cap, regardless of any quote.
+        const hugeName = await post('/intent', {
+            quoteId: quote.quote_id, ownerAddress: OWNER,
+            name: 'x'.repeat(200), metadataUri: 'https://example.invalid/m.json',
+        })
+        eq('a name over the byte cap is refused outright', hugeName.status, 400)
+
+        console.log('')
         console.log('minting begins only on a genuine payment_intent.succeeded:')
 
         const paid: any = await inspect((p: any) => p.payment.findUnique({ where: { id: intent.paymentId } }))

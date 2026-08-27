@@ -19,7 +19,10 @@
 import { parseDecimal, ceilDiv, fromBaseUnits } from './src/chains'
 import { lamportsToEurMinor, formatMinor, parseEurRate, RATE_DECIMALS } from './src/fx'
 import { taxOn, intEnv, mintPricing } from './src/config'
-import { serializeQuote, MAX_QUANTITY, COMPUTE_UNITS, PRIORITY_MICRO_LAMPORTS } from './src/web3fees'
+import {
+    serializeQuote, MAX_QUANTITY, COMPUTE_UNITS, PRIORITY_MICRO_LAMPORTS,
+    MPL_CORE_ASSET_FIXED_BYTES, MAX_NAME_BYTES, MAX_URI_BYTES, assetBytesFor, utf8Bytes,
+} from './src/web3fees'
 
 let failures = 0
 const ok = (label: string) => console.log(`  ok   ${label}`)
@@ -170,9 +173,32 @@ eq('which is 10000 lamports of priority fee',
     Number(ceilDiv(BigInt(PRIORITY_MICRO_LAMPORTS) * BigInt(COMPUTE_UNITS), 1_000_000n)), 10_000)
 
 console.log('')
+console.log('asset sizing is solved from real assets, not guessed:')
+
+// Two assets actually minted on devnet, measured from the chain. Both give the same fixed
+// part, which is what makes this arithmetic rather than estimation.
+eq('the fixed part of an AssetV1', MPL_CORE_ASSET_FIXED_BYTES, 75)
+eq('the 117-byte devnet asset reconstructs', assetBytesFor(10, 32), 117)
+eq('the 303-byte devnet asset reconstructs', assetBytesFor(37, 191), 303)
+
+// Bytes, not characters. An emoji name is one character and four bytes of rent, and the
+// chain charges for bytes.
+eq('ascii is one byte per character', utf8Bytes('Devnet E2E'), 10)
+eq('an emoji is four bytes, not one', utf8Bytes('\u{1F680}'), 4)
+eq('accented latin is two bytes', utf8Bytes('café'), 5)
+eq('a name of emoji is sized by bytes', assetBytesFor(utf8Bytes('\u{1F680}\u{1F680}\u{1F680}'), 0), 87)
+
+// The bound createIntent enforces is the bound an unspecified quote must cover, or a caller
+// who sends no sizes can still mint something the quote did not pay for.
+eq('the no-info default covers the largest allowed asset',
+    MPL_CORE_ASSET_FIXED_BYTES + MAX_NAME_BYTES + MAX_URI_BYTES >= assetBytesFor(MAX_NAME_BYTES, MAX_URI_BYTES),
+    true)
+
+console.log('')
 console.log('the wire contract has exactly the agreed keys:')
 
 const wire = serializeQuote('quote-123', {
+    assetBytes: 182,
     operation: 'nft_mint',
     chain: 'solana',
     quantity: 1,

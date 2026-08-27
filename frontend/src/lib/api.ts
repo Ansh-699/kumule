@@ -214,6 +214,12 @@ export type NftFilters = {
  * amount is an integer count of minor units (cents) and every display string is rendered
  * server-side, so nothing on this side ever divides money by 100.
  */
+/**
+ * UTF-8 byte length, which is what Solana stores and charges rent for. Not string.length:
+ * an emoji is one character and four bytes.
+ */
+export const utf8Bytes = (value: string): number => new TextEncoder().encode(value).length
+
 export type FeeQuote = {
     quote_id: string
     operation: string
@@ -361,12 +367,24 @@ export const api = {
 
     // ---------------------------------------------------------------- stripe rail
 
-    feeQuote: (params: { operation?: string; chain?: string; quantity?: number } = {}) =>
+    // nameBytes/uriBytes are optional on the wire but always sent from here: the metadata is
+    // already uploaded by the time a price is asked for, so the exact on-chain size is known
+    // and the buyer can be charged for their asset rather than for the worst case.
+    feeQuote: (params: {
+        operation?: string
+        chain?: string
+        quantity?: number
+        name?: string
+        uri?: string
+    } = {}) =>
         request<FeeQuote>(
             `/api/v1/web3/fees/quote${qs({
                 operation: params.operation ?? 'nft_mint',
                 chain: params.chain ?? 'solana',
                 quantity: params.quantity ?? 1,
+                ...(params.name !== undefined && params.uri !== undefined
+                    ? { nameBytes: utf8Bytes(params.name), uriBytes: utf8Bytes(params.uri) }
+                    : {}),
             })}`
         ),
 

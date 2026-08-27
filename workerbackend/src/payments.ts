@@ -10,6 +10,7 @@ import { withPrisma, getConnectionString } from './db'
 import { isSolanaAddress } from './chains'
 import { getBalance } from './solana'
 import { mintPricing, taxOn, directCryptoEnabled } from './config'
+import { assetBytesFor, utf8Bytes, MAX_NAME_BYTES, MAX_URI_BYTES } from './web3fees'
 import { formatMinor } from './fx'
 import { createPaymentIntent, verifyWebhookSignature } from './stripe'
 import { platformSigner, runMintJob, sweepMintJobs, refundJob } from './mintjob'
@@ -48,11 +49,16 @@ export const createIntent = async (c: Context<{ Bindings: CloudflareBindings }>)
     if (typeof ownerAddress !== 'string' || !isSolanaAddress(ownerAddress)) {
         return c.json({ error: 'ownerAddress must be a valid Solana public key' }, 400)
     }
-    if (typeof name !== 'string' || !name.trim() || name.length > 100) {
-        return c.json({ error: 'name is required and must be under 100 characters' }, 400)
+    // Bounded in BYTES rather than characters: a 100-character name of emoji is 400 bytes of
+    // on-chain rent, which is not what a 100-character limit reads like it is promising.
+    if (typeof name !== 'string' || !name.trim() || utf8Bytes(name) > MAX_NAME_BYTES) {
+        return c.json({ error: `name is required and must be at most ${MAX_NAME_BYTES} bytes` }, 400)
     }
     if (typeof metadataUri !== 'string' || !/^https?:\/\//.test(metadataUri)) {
         return c.json({ error: 'metadataUri must be an http(s) URL' }, 400)
+    }
+    if (utf8Bytes(metadataUri) > MAX_URI_BYTES) {
+        return c.json({ error: `metadataUri must be at most ${MAX_URI_BYTES} bytes` }, 400)
     }
 
     const pricing = mintPricing(c.env)
@@ -72,6 +78,25 @@ export const createIntent = async (c: Context<{ Bindings: CloudflareBindings }>)
             return c.json(
                 { error: 'Only quantity=1 can be paid for today', code: 'unsupported_quantity' },
                 400
+            )
+        }
+
+        // The quote paid rent for an account of a specific size. If the asset about to be
+        // minted is bigger than that, the platform silently eats the difference on every
+        // such mint - so this refuses rather than absorbing it. Measured in UTF-8 bytes,
+        // because that is what the chain stores: an emoji is one character and four bytes.
+        const actualAssetBytes = assetBytesFor(utf8Bytes(name.trim()), utf8Bytes(metadataUri))
+        if (actualAssetBytes > quote.assetBytes) {
+            return c.json(
+                {
+                    error:
+                        'This name and metadata URI need more on-chain space than the quote covers. ' +
+                        'Request a new quote with nameBytes and uriBytes.',
+                    code: 'quote_too_small',
+                    needsBytes: actualAssetBytes,
+                    quotedBytes: quote.assetBytes,
+                },
+                409
             )
         }
 

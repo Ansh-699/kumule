@@ -449,6 +449,9 @@ model FeeQuote {
   // Signature fee + priority fee + rent exemption, per the whole quote (already
   // multiplied by quantity).
   networkFeeLamports BigInt   @map("network_fee_lamports")
+  /// Size of the asset account this quote paid rent for. createIntent refuses anything that
+  /// would not fit, so a quote can never under-cover the asset it is spent on.
+  assetBytes         Int      @default(403) @map("asset_bytes")
   // EUR per SOL, scaled by 1e8 and held as an integer. A float rate would put rounding
   // error into every fee this row explains.
   rateScaled         BigInt   @map("rate_scaled")
