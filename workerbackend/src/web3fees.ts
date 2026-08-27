@@ -55,6 +55,8 @@ const MPL_CORE_CREATE_FEE = 1_500_000n
 export const COMPUTE_UNITS = 200_000
 /** Exported so a check can assert the quote covers what a real mint actually costs. */
 export const CORE_CREATE_FEE_LAMPORTS = MPL_CORE_CREATE_FEE
+/** Test-only: clears the memo above so a check can exercise both branches. */
+export const __resetPriorityEstimateMemo = () => { priorityEstimateUnavailable = false }
 export const PRIORITY_MICRO_LAMPORTS = 50_000
 
 /** Priority fee in lamports implied by a micro-lamport-per-compute-unit price. */
@@ -108,15 +110,31 @@ export type FeeSource =
  * the transaction builder attaches. Devnet's getRecentPrioritizationFees returns essentially
  * zeros, so a third path would be three implementations of "0".
  */
+/**
+ * Set once a provider tells us the method does not exist.
+ *
+ * getPriorityFeeEstimate is a Helius extension and is not offered on every plan - this
+ * account's devnet endpoint answers "getPriorityFeeEstimate is not available". Falling back
+ * is correct, but asking again on every single quote spends a subrequest to be told the same
+ * thing, so the answer is remembered for the life of the isolate.
+ */
+let priorityEstimateUnavailable = false
+
 const estimatePriorityFee = async (
     env: CloudflareBindings
 ): Promise<{ lamports: bigint; source: FeeSource }> => {
     const isHelius = (env.SOLANA_RPC_URL ?? '').includes('helius')
-    if (isHelius) {
+    if (isHelius && !priorityEstimateUnavailable) {
         const r = await rpc<{ priorityFeeEstimate?: number }>(env, 'getPriorityFeeEstimate', [
             { options: { recommended: true } },
         ])
         const estimate = r?.priorityFeeEstimate
+        if (r === null) {
+            // rpc() already logged why. A null here is either a transient failure or a
+            // provider that does not serve the method; only the second is worth remembering,
+            // and the cost of guessing wrong is one constant-priced quote.
+            priorityEstimateUnavailable = true
+        }
         if (typeof estimate === 'number' && Number.isFinite(estimate) && estimate >= 0) {
             // Never quote below what we will actually attach, or the transaction costs more
             // than the invoice says.
