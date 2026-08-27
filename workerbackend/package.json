@@ -14,7 +14,9 @@
     "test:api": "node api-test.mjs",
     "test:security": "tsx security-check.ts",
     "//test:devnet": "Mints for real on devnet: needs a local Postgres and either a working faucet or a funded ~/.config/solana/id.json. Skips loudly without them. Run before a deploy, not on every save.",
-    "test:devnet": "tsx devnet-mint-check.ts"
+    "test:devnet": "tsx devnet-mint-check.ts",
+    "//test:e2e": "The whole rail with every component real: local Postgres, stripe-mock, real Solana devnet, real rate oracle. Needs both containers and a funded devnet keypair; skips loudly without them.",
+    "test:e2e": "tsx e2e-check.ts"
   },
   "dependencies": {
     "@metaplex-foundation/mpl-core": "^1.7.0",

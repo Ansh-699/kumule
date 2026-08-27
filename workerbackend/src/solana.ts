@@ -136,12 +136,21 @@ export const verifySolPayment = async (
     return { ok: true }
 }
 
-/** Lamport balance of an address, or null when the RPC is unreachable. */
+/**
+ * Lamport balance of an address, or null when the RPC is unreachable.
+ *
+ * At the 'confirmed' commitment, deliberately, and not the RPC default of 'finalized'.
+ * Finalization trails confirmation by roughly fifteen seconds, so the default reported a
+ * freshly funded wallet as EMPTY - which mattered because checkout gates on this: topping up
+ * the mint vault and immediately taking an order got "Minting is temporarily unavailable",
+ * and a vault whose balance had just moved could refuse perfectly fundable orders. Every other
+ * read in this codebase is already at 'confirmed', including umi's own client.
+ */
 export const getBalance = async (
     env: CloudflareBindings,
     address: string
 ): Promise<bigint | null> => {
-    const r = await rpc<{ value: number }>(env, 'getBalance', [address])
+    const r = await rpc<{ value: number }>(env, 'getBalance', [address, { commitment: 'confirmed' }])
     return r ? BigInt(r.value) : null
 }
 
