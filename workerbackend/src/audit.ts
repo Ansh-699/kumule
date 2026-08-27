@@ -171,10 +171,23 @@ export const auditedTransactionData = async (
  * `identifier` may be a tx hash or a row id: callers hold whichever they were given, and
  * making them guess would just push the same branch outward.
  */
+/**
+ * Verdicts an audit check can reach.
+ *
+ * `error` exists because the alternative is worse than useless: a database that will not
+ * answer used to come back as valid:false with a stringified exception, which is the same
+ * shape this function uses to say "this row was tampered with". An operator investigating a
+ * suspected tamper could not tell the two apart, and the reassuring reading - "the check just
+ * could not run" - is exactly the one an attacker would want them to take.
+ */
+export type ChecksumVerdict =
+    | { valid: true; status: 'verified'; message: string }
+    | { valid: false; status: 'not_found' | 'no_checksum' | 'mismatch' | 'error'; message: string }
+
 export async function verifyTransactionChecksum(
     connectionString: string,
     identifier: string
-): Promise<{ valid: boolean; message: string }> {
+): Promise<ChecksumVerdict> {
     try {
         const record = await withPrisma(connectionString, async (prisma) => {
             const byHash = await prisma.transaction.findUnique({ where: { txHash: identifier } })
@@ -182,14 +195,14 @@ export async function verifyTransactionChecksum(
             return prisma.transaction.findUnique({ where: { id: identifier } })
         })
 
-        if (!record) return { valid: false, message: 'Transaction not found' }
+        if (!record) return { valid: false, status: 'not_found', message: 'Transaction not found' }
 
         const metadata = (
             typeof record.metadata === 'string' ? JSON.parse(record.metadata) : record.metadata
         ) as Record<string, any> | null
 
         if (!metadata?._checksum || !metadata?._timestamp) {
-            return { valid: false, message: 'Transaction missing checksum data' }
+            return { valid: false, status: 'no_checksum', message: 'Transaction missing checksum data' }
         }
 
         const expected = await checksumTransaction({
@@ -203,10 +216,25 @@ export async function verifyTransactionChecksum(
         })
 
         return expected === metadata._checksum
-            ? { valid: true, message: 'Checksum verified' }
-            : { valid: false, message: 'Checksum mismatch - transaction may have been tampered with' }
+            ? { valid: true, status: 'verified', message: 'Checksum verified' }
+            : {
+                valid: false,
+                status: 'mismatch',
+                message: 'Checksum mismatch - transaction may have been tampered with',
+            }
     } catch (error) {
-        return { valid: false, message: `Verification failed: ${error}` }
+        // `${error}` on a WebSocket failure renders as "[object ErrorEvent]", which told an
+        // operator nothing at all. Reach for a real message before falling back to that.
+        const detail =
+            error instanceof Error
+                ? error.message
+                : (error as { message?: string })?.message ?? String(error)
+        console.error('verifyTransactionChecksum could not run:', error)
+        return {
+            valid: false,
+            status: 'error',
+            message: `Could not verify - the check did not run: ${detail}`,
+        }
     }
 }
 

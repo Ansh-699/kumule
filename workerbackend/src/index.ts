@@ -327,7 +327,12 @@ app.get('/api/admin/audit/:identifier', adminAuth, async (c) => {
     const connectionString = getConnectionString(c.env)
     if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
     const result = await verifyTransactionChecksum(connectionString, c.req.param('identifier'))
-    return c.json(result, result.valid ? 200 : 400)
+    // A check that could not run is not the caller's mistake, and answering 400 invited
+    // reading it as "this row is fine, your request was wrong". 503 says the audit is
+    // unavailable; 404 says no such row; 400 stays for a row that genuinely fails.
+    const status =
+        result.status === 'error' ? 503 : result.status === 'not_found' ? 404 : result.valid ? 200 : 400
+    return c.json(result, status)
 })
 
 // Named as well as default. The default export is now a handler object so the cron trigger

@@ -16,7 +16,10 @@
 
 import { readFileSync } from 'node:fs'
 import { Prisma } from '@prisma/client'
-import { checksumTransaction, createTransactionChecksum, auditedTransactionData } from './src/audit'
+import {
+    checksumTransaction, createTransactionChecksum, auditedTransactionData,
+    verifyTransactionChecksum,
+} from './src/audit'
 import { fromBaseUnits } from './src/chains'
 
 const { Decimal } = Prisma
@@ -160,6 +163,25 @@ const run = async () => {
         if (row.currency === currency) ok(`${chain} rows are labelled ${currency}`)
         else fail(`${chain} row currency`, `got ${row.currency}`)
     }
+
+    console.log('')
+    console.log('a check that could not run is distinguishable from a tamper:')
+
+    // These used to be the same answer. A database that will not respond returned
+    // valid:false with a stringified exception - the same shape as "this row was altered" -
+    // so an operator investigating a suspected tamper could not tell which had happened, and
+    // the reassuring reading is the one an attacker would want them to take.
+    const unreachable = await verifyTransactionChecksum(
+        'postgresql://nobody:nobody@127.0.0.1:1/none', 'anything'
+    )
+    if (unreachable.status === 'error') ok('an unreachable database reports error, not mismatch')
+    else fail('an unreachable database reported', unreachable.status)
+    if (unreachable.valid === false) ok('and still does not call the row valid')
+    else fail('an unreachable database reported the row as valid')
+    if (!/tamper/i.test(unreachable.message)) ok('and never says the word tamper')
+    else fail('an unreachable database was reported as a possible tamper')
+    if (!/\[object /.test(unreachable.message)) ok('with a readable message, not [object Object]')
+    else fail('the message is an unrendered object', unreachable.message)
 
     console.log('')
     console.log('every Transaction writer routes through the helper:')
