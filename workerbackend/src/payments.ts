@@ -274,6 +274,32 @@ const kickOff = (c: Context<{ Bindings: CloudflareBindings }>, work: Promise<unk
     }
 }
 
+/**
+ * Find the payment intent an event is about.
+ *
+ * Not simply `data.object.id`, because that is only the intent for `payment_intent.*` events.
+ * A `charge.*` event carries a Charge, whose own id is `ch_...` and which names its intent in
+ * a separate field - so reading `.id` there yields something that is not a payment intent at
+ * all, and a prefix guard then discards the event silently. That is how the entire refund path
+ * became unreachable in production while a test that fabricated the wrong shape went green.
+ *
+ * `payment_intent` is an expandable field: a string normally, an object when the caller asked
+ * Stripe to expand it. Both are accepted.
+ */
+export const paymentIntentIdFrom = (event: any): string | null => {
+    const object = event?.data?.object ?? {}
+    const type: string = event?.type ?? ''
+
+    if (type.startsWith('charge.') || type.startsWith('refund.')) {
+        const pi = object.payment_intent
+        const id = typeof pi === 'string' ? pi : pi?.id
+        return typeof id === 'string' && id.startsWith('pi_') ? id : null
+    }
+
+    const id = object.id
+    return typeof id === 'string' && id.startsWith('pi_') ? id : null
+}
+
 /** Stripe stops retrying after roughly three days; past that a missing row is not a race. */
 const STALE_EVENT_MS = 60 * 60 * 1_000
 
@@ -308,11 +334,11 @@ export const stripeWebhook = async (c: Context<{ Bindings: CloudflareBindings }>
 
     const type: string = event?.type ?? ''
     const intent = event?.data?.object ?? {}
-    const intentId: string | undefined = intent?.id
+    const intentId = paymentIntentIdFrom(event)
 
     // Stripe guarantees neither ordering nor exactly-once delivery, so anything not keyed on
     // the payment intent is acknowledged and ignored.
-    if (!intentId || !String(intentId).startsWith('pi_')) {
+    if (!intentId) {
         return c.json({ received: true, ignored: 'no payment intent on this event' })
     }
 

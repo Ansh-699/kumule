@@ -208,27 +208,6 @@ export const createPaymentIntent = (
         params.idempotencyKey
     )
 
-export const retrievePaymentIntent = async (
-    env: CloudflareBindings,
-    id: string
-): Promise<StripeResult<PaymentIntent>> => {
-    const secretKey = env.STRIPE_SECRET_KEY
-    if (!secretKey) return { ok: false, status: 503, message: 'STRIPE_SECRET_KEY is not configured' }
-    try {
-        const res = await fetch(`${API}/payment_intents/${encodeURIComponent(id)}`, {
-            headers: { Authorization: `Bearer ${secretKey}` },
-        })
-        const parsed = (await res.json().catch(() => null)) as any
-        if (!res.ok) {
-            return { ok: false, status: res.status, message: parsed?.error?.message ?? 'Stripe error' }
-        }
-        return { ok: true, data: parsed as PaymentIntent }
-    } catch (e) {
-        console.error('stripe retrieve threw:', e)
-        return { ok: false, status: 502, message: 'Could not reach Stripe' }
-    }
-}
-
 export type Refund = { id: string; status: string; amount: number }
 
 /**

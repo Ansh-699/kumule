@@ -21,7 +21,7 @@ import { Hono } from 'hono'
 import { PublicKey } from '@solana/web3.js'
 import { startLocalNeonProxy, resetDatabase, inspect, POSTGRES_URL } from './db-harness'
 import { getFeeQuote, CORE_CREATE_FEE_LAMPORTS } from './src/web3fees'
-import { createIntent, getPayment, stripeWebhook } from './src/payments'
+import { createIntent, getPayment, stripeWebhook, paymentIntentIdFrom } from './src/payments'
 import { signPayloadForTest } from './src/stripe'
 import { withPrisma } from './src/db'
 
@@ -404,9 +404,13 @@ const run = async () => {
         const rPayment: any = await inspect((p: any) => p.payment.findUnique({ where: { id: rBody.paymentId } }))
 
         // Case one: refunded before the mint starts. It simply never runs.
+        // The shape Stripe actually sends: data.object is a CHARGE, whose own id is ch_... and
+        // which names the intent in a separate field. An earlier version of this check made up
+        // a payload with the intent at .id - a shape Stripe never sends - and passed while the
+        // refund handler was unreachable in production.
         await webhook({
             type: 'charge.refunded', created: Math.floor(Date.now() / 1000),
-            data: { object: { id: rPayment.stripePaymentIntentId } },
+            data: { object: { id: 'ch_stub_refund_1', payment_intent: rPayment.stripePaymentIntentId, refunded: true } },
         })
         const refunded: any = await inspect(async (p: any) => ({
             payment: await p.payment.findUnique({ where: { id: rBody.paymentId } }),
@@ -428,7 +432,7 @@ const run = async () => {
         )
         await webhook({
             type: 'charge.refunded', created: Math.floor(Date.now() / 1000),
-            data: { object: { id: lPayment.stripePaymentIntentId } },
+            data: { object: { id: 'ch_stub_refund_2', payment_intent: lPayment.stripePaymentIntentId, refunded: true } },
         })
         const late: any = await inspect(async (p: any) => ({
             payment: await p.payment.findUnique({ where: { id: lBody.paymentId } }),
@@ -457,6 +461,31 @@ const run = async () => {
         }))
         eq('the payment is failed', declined.payment.status, 'FAILED')
         eq('the job is failed, not pending', declined.job.status, 'FAILED')
+
+        console.log('')
+        console.log('the payment intent is found wherever the event actually puts it:')
+
+        // Real Stripe payload shapes. payment_intent.* events carry the intent itself;
+        // charge.* events carry a Charge that merely references it.
+        eq('payment_intent.succeeded -> data.object.id',
+            paymentIntentIdFrom({ type: 'payment_intent.succeeded', data: { object: { id: 'pi_a' } } }), 'pi_a')
+        eq('payment_intent.payment_failed -> data.object.id',
+            paymentIntentIdFrom({ type: 'payment_intent.payment_failed', data: { object: { id: 'pi_b' } } }), 'pi_b')
+        eq('charge.refunded -> data.object.payment_intent, NOT .id',
+            paymentIntentIdFrom({ type: 'charge.refunded', data: { object: { id: 'ch_x', payment_intent: 'pi_c' } } }), 'pi_c')
+        eq('charge.succeeded -> the same field',
+            paymentIntentIdFrom({ type: 'charge.succeeded', data: { object: { id: 'ch_y', payment_intent: 'pi_d' } } }), 'pi_d')
+        // Expandable field: a string normally, an object when expand was requested.
+        eq('an expanded payment_intent object',
+            paymentIntentIdFrom({ type: 'charge.refunded', data: { object: { id: 'ch_z', payment_intent: { id: 'pi_e' } } } }), 'pi_e')
+        // A charge that never went through a PaymentIntent is not ours.
+        eq('a charge with no intent is ignored',
+            paymentIntentIdFrom({ type: 'charge.refunded', data: { object: { id: 'ch_legacy', payment_intent: null } } }), null)
+        eq('a charge id is never mistaken for an intent',
+            paymentIntentIdFrom({ type: 'charge.refunded', data: { object: { id: 'ch_only' } } }), null)
+        eq('an unrelated event is ignored',
+            paymentIntentIdFrom({ type: 'customer.created', data: { object: { id: 'cus_1' } } }), null)
+        eq('a malformed event does not throw', paymentIntentIdFrom({}), null)
 
         console.log('')
         console.log('the status endpoint leaks nothing the buyer should not hold:')
