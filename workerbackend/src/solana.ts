@@ -8,7 +8,12 @@ import { solanaRpc, fromBaseUnits } from './chains'
 
 type RpcResult<T> = { result?: T; error?: { message?: string } }
 
-const rpc = async <T>(
+/**
+ * Raw Solana JSON-RPC. Exported because the fee quote and the mint runner both need to
+ * reach methods this module does not wrap; copying it would fork the error handling that
+ * makes every read here fail closed.
+ */
+export const rpc = async <T>(
     env: CloudflareBindings,
     method: string,
     params: unknown[]
@@ -138,4 +143,62 @@ export const getBalance = async (
 ): Promise<bigint | null> => {
     const r = await rpc<{ value: number }>(env, 'getBalance', [address])
     return r ? BigInt(r.value) : null
+}
+
+/**
+ * What a transaction actually cost its fee payer, in lamports.
+ *
+ * Deliberately not readSolTransfer: that function finds the largest balance mover, which
+ * for a mint is the new asset account receiving its rent, not the wallet that paid. This
+ * one reads index 0 - Solana's fee payer is always the first account key - and refuses to
+ * answer if that key is not the wallet we expected, rather than reporting some other
+ * account's delta as our cost.
+ *
+ * The delta covers the signature fee, any priority fee, and the rent deposited into the
+ * new account. That total is what "actual fee paid" has to mean for a platform-paid mint:
+ * the rent is gone from the vault for good, because the asset belongs to the buyer.
+ */
+export const readFeePayerCost = async (
+    env: CloudflareBindings,
+    signature: string,
+    expectedFeePayer: string
+): Promise<{ lamports: bigint; slot: number | null } | null> => {
+    const tx = await rpc<{
+        slot?: number
+        meta?: { err: unknown; preBalances?: number[]; postBalances?: number[] } | null
+        transaction?: { message?: { accountKeys?: unknown[] } }
+    }>(env, 'getTransaction', [
+        signature,
+        { encoding: 'json', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+    ])
+
+    if (!tx?.meta || tx.meta.err !== null) return null
+
+    const { preBalances, postBalances } = tx.meta
+    if (!preBalances?.length || !postBalances?.length) return null
+
+    // accountKeys entries are strings for legacy messages and objects once jsonParsed or a
+    // versioned message is involved; normalise before comparing.
+    const first = tx.transaction?.message?.accountKeys?.[0]
+    const feePayer =
+        typeof first === 'string' ? first : (first as { pubkey?: string } | undefined)?.pubkey
+    if (feePayer !== expectedFeePayer) {
+        console.error(`fee payer mismatch: tx paid by ${feePayer}, expected ${expectedFeePayer}`)
+        return null
+    }
+
+    const spent = BigInt(preBalances[0]) - BigInt(postBalances[0])
+    // A negative delta means the payer came out ahead, which cannot happen for a mint and
+    // means we are reading the wrong transaction.
+    if (spent < 0n) return null
+    return { lamports: spent, slot: tx.slot ?? null }
+}
+
+/** Rent-exempt minimum for an account of `bytes`, straight from the cluster. */
+export const rentExemptLamports = async (
+    env: CloudflareBindings,
+    bytes: number
+): Promise<bigint | null> => {
+    const r = await rpc<number>(env, 'getMinimumBalanceForRentExemption', [bytes])
+    return typeof r === 'number' ? BigInt(r) : null
 }

@@ -187,19 +187,45 @@ export const fromBaseUnits = (amount: bigint | string, chain: Chain): string => 
     return `${neg ? '-' : ''}${whole}${frac ? `.${frac}` : ''}`
 }
 
-/** Decimal string to smallest units. Extra fractional digits are rejected, never rounded. */
-export const toBaseUnits = (amount: string, chain: Chain): bigint => {
-    const decimals = CHAIN_CONFIG[chain].decimals
-    const s = amount.trim()
-    if (!/^-?\d+(\.\d+)?$/.test(s)) throw new Error(`not a decimal amount: ${amount}`)
+/**
+ * Decimal string to an integer scaled by `decimals`, without a float anywhere in the path.
+ * Extra fractional digits are rejected, never rounded - silently dropping a digit off a
+ * price loses someone money.
+ *
+ * Split out of toBaseUnits because chain decimals are not the only scale this repo needs:
+ * an exchange rate is a decimal string too, and parsing it with `Number()` throws away the
+ * precision before any BigInt can protect it.
+ */
+export const parseDecimal = (value: string, decimals: number): bigint => {
+    const s = value.trim()
+    if (!/^-?\d+(\.\d+)?$/.test(s)) throw new Error(`not a decimal amount: ${value}`)
     const neg = s.startsWith('-')
     const [whole, frac = ''] = (neg ? s.slice(1) : s).split('.')
     if (frac.length > decimals) {
-        throw new Error(`${amount} has more than ${decimals} decimals for ${chain}`)
+        throw new Error(`${value} has more than ${decimals} decimals`)
     }
     const v = BigInt(whole + frac.padEnd(decimals, '0'))
     return neg ? -v : v
 }
+
+/** Decimal string to smallest units. Extra fractional digits are rejected, never rounded. */
+export const toBaseUnits = (amount: string, chain: Chain): bigint => {
+    const decimals = CHAIN_CONFIG[chain].decimals
+    try {
+        return parseDecimal(amount, decimals)
+    } catch (e) {
+        // The chain-specific message the existing callers and chains-check.ts expect.
+        const msg = (e as Error).message
+        if (msg.startsWith('not a decimal')) throw new Error(`not a decimal amount: ${amount}`)
+        throw new Error(`${amount} has more than ${decimals} decimals for ${chain}`)
+    }
+}
+
+/**
+ * Divide two bigints, rounding up. Every fee this repo quotes rounds towards the platform:
+ * rounding a fee down means Kumele silently pays the difference on every single mint.
+ */
+export const ceilDiv = (a: bigint, b: bigint): bigint => (a + b - 1n) / b
 
 // --- rpc ---
 

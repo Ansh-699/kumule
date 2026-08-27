@@ -33,6 +33,15 @@
   // ],
   // One binding, one bucket. NFT_BUCKET was a second name for this same bucket that no
   // code ever read - two handles to one store is how a write goes to the wrong one.
+  // Sweeps mint jobs the webhook could not finish, and refunds the ones that never can.
+  // Five minutes rather than every minute: withPrisma opens a fresh Neon WebSocket per call,
+  // so a per-minute tick would keep the database awake 1,440 times a day to usually find
+  // nothing. The webhook's waitUntil covers the happy-path latency; this is the guarantee.
+  "triggers": {
+    "crons": [
+      "*/5 * * * *"
+    ]
+  },
   "r2_buckets": [
     {
       "binding": "NFT_IMAGES",

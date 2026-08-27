@@ -4,7 +4,7 @@
 // while anything that touches a chain goes through the chain abstraction. Nothing in this file
 // knows how Solana and EVM differ.
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 
 // Buffer is not imported or polyfilled here. The nodejs_compat flag at this compatibility date
 // (2024-09-23 or later) puts a working Buffer on globalThis already - verified in workerd, not
@@ -59,6 +59,14 @@ import {
 import { verifyTransactionChecksum } from './audit'
 import { openAPISpec } from './openapi'
 
+// stripe rail: fiat in, NFT out. The only mint path that runs while the buyer is away.
+import { getFeeQuote } from './web3fees'
+import {
+    createIntent, getPayment, stripeWebhook, scheduled, featureFlags,
+    adminListPayments, adminRefundPayment,
+} from './payments'
+import { directCryptoEnabled } from './config'
+
 const app = new Hono<{ Bindings: CloudflareBindings }>()
 
 // ---------------------------------------------------------------- middleware
@@ -76,6 +84,31 @@ app.use('*', async (c, next) => {
     await next()
 })
 
+/**
+ * Direct-crypto routes are dormant for the Stripe MVP.
+ *
+ * A wrapper rather than conditional registration, because `app` is built at module scope
+ * where `env` does not exist yet - in Workers the environment arrives per request. Every
+ * handler below stays imported, compiled and covered by its own check; only the route is
+ * closed, and one variable reopens it.
+ *
+ * 404 rather than 403: as far as this deployment is concerned the endpoint is not there.
+ */
+type ChainOp = (c: Context<{ Bindings: CloudflareBindings }>) => Response | Promise<Response>
+
+const directCrypto =
+    (handler: ChainOp) =>
+    async (c: Context<{ Bindings: CloudflareBindings }>): Promise<Response> =>
+        directCryptoEnabled(c.env)
+            ? handler(c)
+            : c.json(
+                {
+                    error: 'Direct crypto payments are disabled for this deployment',
+                    hint: 'NFTs are minted through card payment; see /api/v1/web3/fees/quote',
+                },
+                404
+            )
+
 app.onError((err, c) => {
     // Logged in full, returned without internals. An unhandled throw should still be a clean
     // JSON 500 rather than a Workers stack trace.
@@ -89,8 +122,12 @@ app.notFound((c) => c.json({ error: 'Not found', path: new URL(c.req.url).pathna
 
 app.get('/health', (c) => c.json({ status: 'ok', version: '2.0.0', timestamp: new Date().toISOString() }))
 
+// features rides along here rather than on a route of its own: the frontend already needs
+// this response before it can render a chain, and a Buy button that 404s is worse than one
+// that was never drawn.
 app.get('/api/chains', (c) =>
     c.json({
+        features: featureFlags(c.env),
         data: CHAINS.map((chain) => ({
             chain,
             label: CHAIN_CONFIG[chain].label,
@@ -136,22 +173,42 @@ app.get('/api/stats', getStats)
 
 // Records a purchase that already landed. Without this a completed buy left the NFT on sale,
 // still owned by the seller, and platform volume stuck at zero on both chains.
+// NOT behind the direct-crypto flag, deliberately. settle records a purchase that has
+// already landed on chain - it re-reads ownership and writes only what actually happened, so
+// it cannot create value - and Base trading stays live in this deployment. Gating it would
+// leave every EVM purchase succeeding on chain and invisible in the marketplace, which is the
+// exact bug this endpoint was added to fix.
 app.post('/api/settle', settle)
+
+// ---------------------------------------------------------------- stripe rail
+//
+// Kumele's wallet pays the chain; the buyer reimburses it as a line on a card payment. The
+// mint runs after payment_intent.succeeded and never before.
+
+app.get('/api/v1/web3/fees/quote', getFeeQuote)
+app.post('/api/v1/payments/intent', createIntent)
+// A capability URL for the checkout page to poll. Holds no secret and no mint address until
+// the asset exists.
+app.get('/api/v1/payments/:paymentId', getPayment)
+// Authenticated by Stripe's signature over the raw body, not by an API key. Deliberately not
+// behind adminAuth: Stripe cannot send one, and a shared key in a webhook would be worse
+// than the signature it replaced.
+app.post('/api/v1/stripe/webhook', stripeWebhook)
 
 // ---------------------------------------------------------------- solana chain ops
 
 app.get('/api/solana/asset', searchNftByAsset)
 app.get('/api/solana/owner', searchNftByOwner)
-app.post('/api/solana/mint', mintNft)
+app.post('/api/solana/mint', directCrypto(mintNft))
 app.post('/api/solana/transfer', transferNft)
-app.post('/api/solana/list', listNft)
+app.post('/api/solana/list', directCrypto(listNft))
 // Build, then sync. Listing rows are written only from what the escrow account actually says,
 // so dismissing a wallet prompt no longer advertises an NFT nobody can buy - or hides one that
 // is still for sale. Covers both listing and cancelling.
-app.post('/api/solana/listing/sync', syncListing)
-app.post('/api/solana/buy', buyNft)
-app.post('/api/solana/cancel', cancelListing)
-app.get('/api/solana/escrows', getListings)
+app.post('/api/solana/listing/sync', directCrypto(syncListing))
+app.post('/api/solana/buy', directCrypto(buyNft))
+app.post('/api/solana/cancel', directCrypto(cancelListing))
+app.get('/api/solana/escrows', directCrypto(getListings))
 // Burning is two steps: build an unsigned transaction, then confirm it landed before the row
 // is removed. The worker holds no user key, so only the owner's wallet can authorise it.
 app.post('/api/solana/burn', burnNft)
@@ -259,7 +316,12 @@ app.post('/api/admin/events/:id/points', adminAuth, grantPoints)
 app.post('/api/admin/events/:id/medals/mint', adminAuth, mintMedals)
 app.get('/api/admin/events/:id/claims', adminAuth, listClaims)
 
-app.post('/api/admin/escrow/resolve', adminAuth, adminResolveEscrow)
+app.post('/api/admin/escrow/resolve', adminAuth, directCrypto(adminResolveEscrow))
+
+// Paid but unminted is the one state that costs a customer real money, so it gets a place to
+// be seen and a button to undo it.
+app.get('/api/admin/payments', adminAuth, adminListPayments)
+app.post('/api/admin/payments/:paymentId/refund', adminAuth, adminRefundPayment)
 
 app.get('/api/admin/audit/:identifier', adminAuth, async (c) => {
     const connectionString = getConnectionString(c.env)
@@ -268,4 +330,14 @@ app.get('/api/admin/audit/:identifier', adminAuth, async (c) => {
     return c.json(result, result.valid ? 200 : 400)
 })
 
-export default app
+// Named as well as default. The default export is now a handler object so the cron trigger
+// has somewhere to land, and auth-parity-check.ts calls app.request(...) - which only exists
+// on the Hono instance itself.
+export { app }
+
+export default {
+    fetch: app.fetch,
+    // Sweeps mint jobs that the webhook's waitUntil did not finish, and refunds the ones that
+    // never can. This is the guarantee; the inline kick is only the fast path.
+    scheduled,
+} satisfies ExportedHandler<CloudflareBindings>

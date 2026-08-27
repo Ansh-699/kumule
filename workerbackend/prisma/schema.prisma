@@ -62,6 +62,29 @@ enum EventStatus {
   CANCELLED
 }
 
+// A Stripe payment's lifecycle. Deliberately separate from MintJobStatus: money settling
+// and an NFT existing are different facts, and conflating them is how a refunded payment
+// keeps a minted asset - or a failed mint hides a successful charge.
+enum PaymentStatus {
+  REQUIRES_PAYMENT
+  PAID
+  FAILED
+  REFUNDED
+}
+
+// BLOCKED is not a failure we retry. It means the derived asset address already holds an
+// account that is not our Core asset - someone dusted it, or a seed rotation moved the
+// derivation - so minting there can never succeed and a human has to decide.
+enum MintJobStatus {
+  AWAITING_PAYMENT
+  PENDING
+  MINTING
+  MINTED
+  FAILED
+  BLOCKED
+  REFUNDED
+}
+
 model User {
   id           String             @id @default(uuid())
   handle       String?            @unique
@@ -73,6 +96,7 @@ model User {
   participants EventParticipant[]
   claims       MedalClaim[]
   transactions Transaction[]
+  payments     Payment[]
 
   @@map("users")
 }
@@ -123,12 +147,12 @@ model Collection {
 }
 
 model Nft {
-  id           String   @id @default(uuid())
-  chain        Chain
-  chainId      Int?     @map("chain_id")
+  id              String  @id @default(uuid())
+  chain           Chain
+  chainId         Int?    @map("chain_id")
   // Canonical cross-chain identity: Solana uses the mint address, EVM uses
   // "<contract>:<tokenId>" lowercased. One unique key means lookups never branch on chain.
-  assetId      String   @unique @map("asset_id")
+  assetId         String  @unique @map("asset_id")
   // Kept alongside assetId so EVM queries can filter on contract or token without parsing.
   contractAddress String? @map("contract_address")
   tokenId         String? @map("token_id")
@@ -161,6 +185,7 @@ model Nft {
   medal      EventMedal?
   album      Album?
   track      Track?
+  mintJob    MintJob?
 
   @@index([chain])
   @@index([ownerAddress])
@@ -234,19 +259,19 @@ model Like {
 // tier threshold. Points are granted through an admin-authenticated endpoint - deliberately
 // mocked rather than derived from verified on-chain activity.
 model Event {
-  id          String             @id @default(uuid())
-  slug        String             @unique
-  name        String
-  description String?
-  imageUrl    String?            @map("image_url")
-  status      EventStatus        @default(DRAFT)
-  startsAt    DateTime?          @map("starts_at")
-  endsAt      DateTime?          @map("ends_at")
-  createdAt   DateTime           @default(now()) @map("created_at")
-  updatedAt   DateTime           @updatedAt @map("updated_at")
-  medals      EventMedal[]
+  id           String             @id @default(uuid())
+  slug         String             @unique
+  name         String
+  description  String?
+  imageUrl     String?            @map("image_url")
+  status       EventStatus        @default(DRAFT)
+  startsAt     DateTime?          @map("starts_at")
+  endsAt       DateTime?          @map("ends_at")
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+  medals       EventMedal[]
   participants EventParticipant[]
-  claims      MedalClaim[]
+  claims       MedalClaim[]
 
   @@index([status])
   @@map("events")
@@ -300,14 +325,14 @@ model EventParticipant {
 }
 
 model MedalClaim {
-  id            String    @id @default(uuid())
-  medalId       String    @map("medal_id")
-  eventId       String    @map("event_id")
-  userId        String    @map("user_id")
-  walletAddress String    @map("wallet_address")
-  pointsAtClaim Int       @map("points_at_claim")
-  txHash        String?   @map("tx_hash")
-  claimedAt     DateTime  @default(now()) @map("claimed_at")
+  id            String     @id @default(uuid())
+  medalId       String     @map("medal_id")
+  eventId       String     @map("event_id")
+  userId        String     @map("user_id")
+  walletAddress String     @map("wallet_address")
+  pointsAtClaim Int        @map("points_at_claim")
+  txHash        String?    @map("tx_hash")
+  claimedAt     DateTime   @default(now()) @map("claimed_at")
   medal         EventMedal @relation(fields: [medalId], references: [id], onDelete: Cascade)
   event         Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
   user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -355,26 +380,26 @@ model Album {
 }
 
 model Track {
-  id          String   @id @default(uuid())
-  albumId     String   @map("album_id")
-  title       String
-  description String?
-  audioUrl    String   @map("audio_url")
-  artworkUrl  String?  @map("artwork_url")
-  durationSec Int?     @map("duration_sec")
-  trackNumber Int      @map("track_number")
-  price       Decimal? @db.Decimal(38, 18)
-  currency    String?
+  id             String   @id @default(uuid())
+  albumId        String   @map("album_id")
+  title          String
+  description    String?
+  audioUrl       String   @map("audio_url")
+  artworkUrl     String?  @map("artwork_url")
+  durationSec    Int?     @map("duration_sec")
+  trackNumber    Int      @map("track_number")
+  price          Decimal? @db.Decimal(38, 18)
+  currency       String?
   // SHA-256 of the uploaded audio, so a swapped file is detectable after minting.
-  integrityHash String? @map("integrity_hash")
-  isPreviewable   Boolean @default(true) @map("is_previewable")
-  previewSeconds  Int     @default(30) @map("preview_seconds")
+  integrityHash  String?  @map("integrity_hash")
+  isPreviewable  Boolean  @default(true) @map("is_previewable")
+  previewSeconds Int      @default(30) @map("preview_seconds")
   // Set once this track is minted as its own NFT.
-  nftId       String?  @unique @map("nft_id")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-  album       Album    @relation(fields: [albumId], references: [id], onDelete: Cascade)
-  nft         Nft?     @relation(fields: [nftId], references: [id])
+  nftId          String?  @unique @map("nft_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  album          Album    @relation(fields: [albumId], references: [id], onDelete: Cascade)
+  nft            Nft?     @relation(fields: [nftId], references: [id])
 
   @@unique([albumId, trackNumber])
   @@index([albumId])
@@ -401,4 +426,114 @@ model Transaction {
   @@index([chain])
   @@index([status])
   @@map("transactions")
+}
+
+// ---------------------------------------------------------------------------
+// Stripe rail. Money is EUR and lives here; chain work lives in MintJob. Nothing in this
+// section writes a Decimal: fiat is exact integer minor units (cents), which is also the
+// only shape Stripe accepts.
+
+// What we quoted, and everything needed to reproduce it later. Kept even after the
+// payment settles: "estimated fee charged vs actual fee paid" is unanswerable without the
+// exchange rate that was in force when the quote was made.
+//
+// There is deliberately no consumed/used flag. A replayed quote produces a second
+// PaymentIntent, so the buyer pays twice and gets two NFTs - correct behaviour, not a
+// loss. The thing that must be single-use is the payment, and MintJob.paymentId is unique.
+model FeeQuote {
+  id                 String   @id @default(uuid())
+  operation          String
+  chain              Chain    @default(SOLANA)
+  quantity           Int      @default(1)
+  currency           String   @default("eur")
+  // Signature fee + priority fee + rent exemption, per the whole quote (already
+  // multiplied by quantity).
+  networkFeeLamports BigInt   @map("network_fee_lamports")
+  // EUR per SOL, scaled by 1e8 and held as an integer. A float rate would put rounding
+  // error into every fee this row explains.
+  rateScaled         BigInt   @map("rate_scaled")
+  estimatedFeeMinor  Int      @map("estimated_fee_minor")
+  source             String
+  confidence         String
+  expiresAt          DateTime @map("expires_at")
+  createdAt          DateTime @default(now()) @map("created_at")
+  payment            Payment?
+
+  @@index([expiresAt])
+  @@map("fee_quotes")
+}
+
+model Payment {
+  id                    String        @id @default(uuid())
+  // Nullable because the row is written BEFORE Stripe is called: a Stripe call that fails
+  // after the row exists is a retryable no-op, whereas a row write that fails after the
+  // charge exists is an orphaned payment nothing can find.
+  stripePaymentIntentId String?       @unique @map("stripe_payment_intent_id")
+  status                PaymentStatus @default(REQUIRES_PAYMENT)
+  currency              String        @default("eur")
+  baseAmountMinor       Int           @map("base_amount_minor")
+  taxAmountMinor        Int           @map("tax_amount_minor")
+  mintFeeMinor          Int           @map("mint_fee_minor")
+  totalAmountMinor      Int           @map("total_amount_minor")
+  quoteId               String?       @unique @map("quote_id")
+  userId                String?       @map("user_id")
+  stripeRefundId        String?       @map("stripe_refund_id")
+  failureReason         String?       @map("failure_reason")
+  paidAt                DateTime?     @map("paid_at")
+  createdAt             DateTime      @default(now()) @map("created_at")
+  updatedAt             DateTime      @updatedAt @map("updated_at")
+  quote                 FeeQuote?     @relation(fields: [quoteId], references: [id])
+  user                  User?         @relation(fields: [userId], references: [id])
+  mintJob               MintJob?
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("payments")
+}
+
+// One payment, one mint. The unique constraint on paymentId is the database half of "the
+// same Stripe payment cannot mint twice" - not handler logic, which a retry can re-enter.
+// Supporting quantity > 1 later means replacing it with @@unique([paymentId, index]).
+model MintJob {
+  id        String        @id @default(uuid())
+  paymentId String        @unique @map("payment_id")
+  status    MintJobStatus @default(AWAITING_PAYMENT)
+  attempts  Int           @default(0)
+  chain     Chain         @default(SOLANA)
+
+  // Everything createV1 needs, captured at checkout while the buyer was still present.
+  ownerAddress String @map("owner_address")
+  name         String
+  metadataUri  String @map("metadata_uri")
+
+  // Derived from (seed, paymentId) and written at claim time, before the send, so a retry
+  // targets the same account instead of minting a second asset.
+  mintAddress String? @unique @map("mint_address")
+  // Which derivation produced mintAddress. Rotating the seed without this makes every
+  // in-flight job unmintable with no way to tell why.
+  seedVersion Int     @default(1) @map("seed_version")
+  txSignature String? @unique @map("tx_signature")
+
+  estimatedFeeMinor Int     @map("estimated_fee_minor")
+  // What the platform wallet actually spent: transaction fee plus the rent it will never
+  // get back. Read from the fee payer's balance delta, not from meta.fee alone.
+  actualFeeLamports BigInt? @map("actual_fee_lamports")
+  actualFeeMinor    Int?    @map("actual_fee_minor")
+
+  ownershipVerified Boolean   @default(false) @map("ownership_verified")
+  ownershipSource   String?   @map("ownership_source")
+  nftId             String?   @unique @map("nft_id")
+  lastError         String?   @map("last_error")
+  // Lease timestamp. Without it an isolate evicted mid-confirm leaves the row in MINTING
+  // forever and no sweep ever looks at it again.
+  lockedAt          DateTime? @map("locked_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  nft     Nft?    @relation(fields: [nftId], references: [id])
+
+  @@index([status])
+  @@index([status, lockedAt])
+  @@map("mint_jobs")
 }

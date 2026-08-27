@@ -40,3 +40,44 @@ ADMIN_API_KEY="generate-a-long-random-value"
 # Absolute origin used to build R2 asset URLs. Derived from the request when unset,
 # which is right for local dev and wrong behind a proxy that rewrites the host.
 # PUBLIC_URL="https://kumele-backend.example.workers.dev"
+
+# --- stripe rail --------------------------------------------------------------
+
+# Card payments. /api/v1/payments/intent 503s without the secret key, and the webhook
+# 503s without the signing secret - neither falls back to accepting anything.
+# STRIPE_SECRET_KEY="sk_test_..."
+# STRIPE_WEBHOOK_SECRET="whsec_..."
+
+# Optional API version pin. Unset means the account default, which is stable per account;
+# a version string that does not exist makes every Stripe call fail, so this is not a
+# value to guess at.
+# STRIPE_API_VERSION="2025-01-27.acacia"
+
+# HMAC root for deterministic mint addresses. Required for minting.
+#
+# This is a DERIVATION ROOT, not a rotatable secret. Every open mint job derives its asset
+# address from it, so rotating it while jobs are in flight makes those jobs underivable -
+# they stop with a BLOCKED status rather than minting a second asset. Drain to zero open
+# jobs before changing it.
+# MINT_ASSET_SEED="generate-a-long-random-value"
+
+# Base58 secret key of the wallet that pays for and signs mints. Falls back to
+# MEDAL_VAULT_PRIVATE_KEY, but they are separate settings on purpose: this one only ever
+# spends SOL on gas and rent, while the medal vault custodies unclaimed medals.
+#
+# Needs roughly 0.002 SOL of balance per mint, almost all of it the rent-exempt minimum for
+# the new asset account, which the platform never gets back. Checkout refuses with a 503
+# when the balance cannot cover the next mint, so a dry vault stops selling rather than
+# charging for something it cannot deliver.
+# MINT_VAULT_PRIVATE_KEY="<base58 64-byte secret key>"
+
+# Pricing, all in EUR minor units (cents).
+# MINT_SERVICE_PRICE_MINOR="200"   # Kumele's charge for a mint; default 200 = EUR 2.00
+# TAX_RATE_BPS="0"                 # VAT in basis points; 2000 = 20%
+# MINT_FEE_FLOOR_MINOR="15"        # floor under the blockchain fee line
+# STRIPE_MIN_CHARGE_MINOR="50"     # Stripe rejects EUR totals under 50; guarded before the call
+# FEE_QUOTE_TTL_SECONDS="900"      # how long a quote may be paid against
+
+# Reopens the Solana escrow routes and the wallet-signed mint, which are off by default for
+# the card-payment MVP. The code stays in the repo either way.
+# ENABLE_DIRECT_CRYPTO="true"

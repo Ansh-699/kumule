@@ -303,6 +303,12 @@ kumule-v2/
 │   ├── chains.ts                 # Chain config, assetIds, base-unit money
 │   ├── nfts.ts                   # Marketplace read API, collections
 │   ├── mint.ts                   # Solana minting + fee verification
+│   ├── web3fees.ts       # blockchain processing fee quotes
+│   ├── fx.ts             # SOL->EUR as an exact scaled integer
+│   ├── stripe.ts         # Stripe over fetch + Web Crypto, no SDK
+│   ├── payments.ts       # intent, webhook, status, cron entry
+│   ├── mintjob.ts        # idempotent platform-paid mint
+│   ├── config.ts         # money config, parsed and defended
 │   ├── escrow.ts                 # Solana list/buy/cancel/sync
 │   ├── settle.ts                 # Post-purchase settlement, EVM indexing
 │   ├── transfer.ts               # Direct transfers
@@ -384,3 +390,38 @@ not by an on-chain program.
                           │   (PostgreSQL)   │
                           └──────────────────┘
 ```
+
+## Payment rail (Stripe)
+
+Stripe handles money. Web3 handles minting and ownership. The backend connects them, and
+neither half trusts the other's numbers.
+
+```
+browser                worker                     stripe            solana
+   |  quote ------------->|                          |                 |
+   |                      |-- rent + priority fee ----------------->|
+   |                      |-- SOL/EUR rate --------->(oracle)        |
+   |<-- fee + quote_id ---|  persists FeeQuote        |                |
+   |  intent ------------>|                           |                |
+   |                      |  writes Payment + MintJob |                |
+   |                      |-- create PaymentIntent -->|                |
+   |<-- client_secret ----|                           |                |
+   |  confirm card -------------------------------->|                 |
+   |                      |<-- payment_intent.succeeded --            |
+   |                      |  job AWAITING_PAYMENT -> PENDING          |
+   |                      |-- createV1, platform pays -------------->|
+   |  poll -------------->|  Nft row, ownership verified              |
+```
+
+Money never crosses a float. Fiat is an integer count of EUR minor units; chain amounts are
+BigInt lamports; the exchange rate is an integer scaled by 1e8, parsed out of the oracle's
+response as a **string** because `res.json()` would have made it a double first. The rate a
+quote used is stored on its row, so "estimated fee charged vs actual fee paid" is answerable
+months later.
+
+`Transaction` rows still record the chain side of every mint (kind `MINT`, currency `SOL`,
+amount = the lamports the platform actually spent) through `auditedTransactionData`, so the
+audit endpoint and the admin dashboard keep working. The EUR side lives on `Payment`, which
+is a separate table because Stripe truth and chain truth have different lifecycles - not,
+as an earlier draft claimed, because `Transaction.currency` could not hold "eur". It is a
+nullable string and could.

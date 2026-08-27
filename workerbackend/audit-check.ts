@@ -168,7 +168,7 @@ const run = async () => {
     // checksum, which is why five of the six kinds could never be audited. A seventh writer that
     // builds its own `data` object would silently reintroduce that, and no behavioural test would
     // catch it - the row writes fine, it just cannot be verified afterwards.
-    const writers = ['mint', 'escrow', 'transfer', 'burn', 'medals', 'settle']
+    const writers = ['mint', 'escrow', 'transfer', 'burn', 'medals', 'settle', 'mintjob']
     for (const file of writers) {
         // .pathname rather than the URL itself: worker-configuration.d.ts declares a global URL
         // that is not structurally Node's, so readFileSync will not take one.

@@ -51,6 +51,63 @@ ADMIN_KEY=... npm run test:api            # also exercises admin authentication
 
 `test:api` never mints, lists, buys, or writes a row. Exit code is the number of failures.
 
+## Paying for a mint
+
+NFTs are minted on Solana after a card payment clears. Kumele's wallet signs the mint and
+pays the network cost; the buyer reimburses it as a line on the Stripe invoice.
+
+```
+POST /api/upload/image, /api/upload/metadata     artwork and metadata land in R2
+GET  /api/v1/web3/fees/quote                     price the blockchain fee, persist the quote
+POST /api/v1/payments/intent                     amounts derived server-side, PaymentIntent
+     <card confirmed in the browser>
+POST /api/v1/stripe/webhook                      the only thing that starts a mint
+     <mint runs, inline or on the next cron tick>
+GET  /api/v1/payments/:paymentId                 poll until the asset exists
+```
+
+**What a mint costs.** About 0.00244 SOL, and roughly 99% of that is the rent-exempt minimum
+for the new asset account, not the transaction fee. The platform never gets it back, because
+the asset ends up owned by the buyer. `MINT_VAULT_PRIVATE_KEY` therefore needs funding, and
+checkout returns 503 rather than taking money when the vault cannot cover the next mint.
+
+**One payment cannot mint twice**, enforced in three independent places:
+
+- `MintJob.paymentId` is unique, so a payment cannot own two jobs
+- claiming a job is a conditional single-row update, the only atomicity primitive here
+- the asset address is derived from the payment id, so a retry targets the same account
+
+That last one is why `MINT_ASSET_SEED` is a **derivation root, not a rotatable secret**.
+Rotating it while jobs are open makes them underivable; they stop with a `BLOCKED` status
+rather than minting a second asset. Drain to zero open jobs first.
+
+**Stripe minimums.** EUR charges under €0.50 are refused by Stripe, so the intent endpoint
+guards the total and returns a clear 400 instead of letting a customer's card decline.
+
+**Testing the webhook locally:**
+
+```
+npx wrangler dev --local
+stripe listen --forward-to localhost:8787/api/v1/stripe/webhook
+```
+
+The cron sweep can be fired by hand:
+
+```
+npx wrangler dev --local --test-scheduled
+curl "http://localhost:8787/cdn-cgi/handler/scheduled?cron=*%2F5+*+*+*+*"
+```
+
+## Direct crypto routes
+
+The Solana escrow surface (`/api/solana/list`, `/buy`, `/cancel`, `/listing/sync`,
+`/escrows`, `/api/admin/escrow/resolve`) and the wallet-signed `/api/solana/mint` are **off
+by default** and answer 404. Every file stays in the repo and stays type-checked; set
+`ENABLE_DIRECT_CRYPTO=true` to reopen them, and `flags-check.ts` grades both directions.
+
+`/api/settle` is deliberately *not* gated: it records a purchase that already landed on
+chain, and Base trading is still live.
+
 ## Database
 
 `prisma/schema.prisma` is the source of truth and `prisma/migrations/` is the history.

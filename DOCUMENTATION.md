@@ -66,6 +66,17 @@ what happens when it is unset. They are the reference; this table is a summary.
 | `MINT_FEE_LAMPORTS`, `MINT_FEE_TREASURY` | no | Minting is free; caller pays their own network fee |
 | `MEDAL_VAULT_PRIVATE_KEY` | no | Medal minting and claiming answer 503 |
 | `PUBLIC_URL` | no | Asset URLs derived from the request host |
+| `STRIPE_SECRET_KEY` | for payments | `/api/v1/payments/intent` answers 503 |
+| `STRIPE_WEBHOOK_SECRET` | for payments | The webhook answers 503 — it never falls back to accepting unsigned bodies |
+| `STRIPE_API_VERSION` | no | The account default; a wrong pin breaks every call, so it is not guessed at |
+| `MINT_ASSET_SEED` | for minting | Mint jobs refuse to run. A derivation root, not a rotatable secret |
+| `MINT_VAULT_PRIVATE_KEY` | for minting | Falls back to `MEDAL_VAULT_PRIVATE_KEY`; without either, minting answers 503 |
+| `MINT_SERVICE_PRICE_MINOR` | no | €2.00 per mint |
+| `TAX_RATE_BPS` | no | No tax line |
+| `MINT_FEE_FLOOR_MINOR` | no | Floor of 15 minor units under the blockchain fee |
+| `STRIPE_MIN_CHARGE_MINOR` | no | 50 — Stripe's EUR minimum, guarded before the call |
+| `FEE_QUOTE_TTL_SECONDS` | no | Quotes last 15 minutes |
+| `ENABLE_DIRECT_CRYPTO` | no | Solana escrow and the wallet-signed mint answer 404 |
 
 ### Frontend — `frontend/.env`
 
@@ -74,8 +85,103 @@ what happens when it is unset. They are the reference; this table is a summary.
 | `VITE_API_BASE` | The deployed worker |
 | `VITE_SOLANA_RPC` | `api.devnet.solana.com` |
 | `VITE_BASE_SEPOLIA_RPC` | wagmi's default for the chain |
+| `VITE_STRIPE_PUBLISHABLE_KEY` | The card form on /create explains that payments are not configured |
 
 ---
+
+## Paying for a mint
+
+NFTs are minted on Solana **after a card payment clears, and never before**. Kumele's
+platform wallet signs the mint and pays the network cost; the buyer reimburses it through an
+itemised "NFT minting fee" on the Stripe invoice.
+
+### The fee quote
+
+```
+GET /api/v1/web3/fees/quote?operation=nft_mint&chain=solana&quantity=1
+```
+
+```json
+{
+  "quote_id": "…",
+  "operation": "nft_mint",
+  "chain": "solana",
+  "currency": "eur",
+  "quantity": 1,
+  "fee_payer": "kumele_platform_wallet",
+  "charged_to_user": true,
+  "estimated_network_fee": { "lamports": 2442080, "sol": "0.00244208" },
+  "estimated_fee_minor": 49,
+  "display_amount": "€0.49",
+  "label": "NFT minting fee",
+  "expires_at": "…",
+  "source": "static_fallback",
+  "confidence": "estimated"
+}
+```
+
+`source` names which estimator answered. It never carries a URL or an API key — the Helius
+endpoint stays in `SOLANA_RPC_URL` on the server and appears in no response body.
+
+**Why the number is bigger than you expect.** Minting an MPL Core asset creates a new
+on-chain account, and Solana requires it to be rent-exempt: about 2,422,080 lamports for a
+typical asset, against 10,000 for the signatures and 10,000 for the priority fee. Rent is
+roughly 99% of the cost and the platform never gets it back, because the asset ends up owned
+by the buyer. An estimate that counts only the transaction fee is short by about 200×.
+
+### Taking the payment
+
+```
+POST /api/v1/payments/intent
+{ "quoteId": "…", "ownerAddress": "<solana address>", "name": "…", "metadataUri": "https://…" }
+```
+
+Every amount is derived on the server from the quote row. The body contributes only the
+quote id, where to send the NFT, and what to mint — anything in it that looks like a price
+is ignored. The response carries `clientSecret` and the full breakdown.
+
+The PaymentIntent metadata carries:
+
+```
+requires_nft_mint = "true"
+nft_minting_fee_minor = "49"
+nft_minting_fee_quote_id = "…"
+nft_minting_fee_label = "NFT minting fee"
+nft_chain = "solana"
+```
+
+That metadata is for the Stripe dashboard and reconciliation. The webhook re-reads
+everything from the database and never trusts a number that arrived in it.
+
+### Minting
+
+`POST /api/v1/stripe/webhook` is the only thing that starts a mint. It verifies an HMAC
+signature over the raw body, flips the job to `PENDING`, and returns 200. The mint then runs
+either immediately (via `waitUntil`, good for about one job) or on the next cron tick, every
+five minutes. `GET /api/v1/payments/:paymentId` is the poll endpoint for the checkout page.
+
+**One payment cannot mint twice.** Three independent layers: `MintJob.paymentId` is unique;
+claiming a job is a conditional single-row update; and the asset address is derived from the
+payment id, so a retry targets the same account rather than creating a second asset.
+
+**If a mint can never succeed** — a dusted address, an unfunded vault — the job reaches a
+terminal state and the payment is refunded automatically. `GET /api/admin/payments` reports
+a `stranded` count for anything paid but unminted, and
+`POST /api/admin/payments/:id/refund` is the manual lever. It refuses to refund a mint that
+actually succeeded.
+
+### Operational notes
+
+- The mint wallet needs roughly **0.00244 SOL per mint**. Checkout returns 503 rather than
+  taking money when it cannot cover the next one.
+- `MINT_ASSET_SEED` is a **derivation root, not a rotatable secret**. Rotating it while jobs
+  are open makes them underivable — they stop with `BLOCKED` rather than double-minting.
+  Drain to zero open jobs first.
+- Stripe refuses EUR totals under €0.50. The intent endpoint guards this and returns a clear
+  400 instead of a declined card.
+- The Solana escrow routes and the wallet-signed mint are **off by default**
+  (`ENABLE_DIRECT_CRYPTO`). Base Sepolia minting and trading are unaffected and still
+  wallet-signed, so the Create page carries two payment models and says which is which.
 
 ## API reference
 

@@ -205,13 +205,78 @@ export type NftFilters = {
     offset?: number
 }
 
+// ---------------------------------------------------------------- payments
+
+/**
+ * The blockchain processing fee, priced by the backend.
+ *
+ * Kumele's wallet pays the actual Solana cost; this is what the buyer reimburses. Every
+ * amount is an integer count of minor units (cents) and every display string is rendered
+ * server-side, so nothing on this side ever divides money by 100.
+ */
+export type FeeQuote = {
+    quote_id: string
+    operation: string
+    chain: string
+    currency: string
+    quantity: number
+    fee_payer: string
+    charged_to_user: boolean
+    estimated_network_fee: { lamports: number; sol: string }
+    estimated_fee_minor: number
+    display_amount: string
+    label: string
+    expires_at: string
+    source: string
+    confidence: string
+}
+
+export type PriceBreakdown = {
+    base_amount_minor: number
+    tax_amount_minor: number
+    nft_minting_fee_minor: number
+    total_amount_minor: number
+    display: { base: string; tax: string; nft_minting_fee: string; total: string }
+}
+
+export type PaymentIntentResponse = {
+    paymentId: string
+    clientSecret: string
+    currency: string
+    breakdown: PriceBreakdown
+}
+
+export type MintJobStatus =
+    | 'AWAITING_PAYMENT' | 'PENDING' | 'MINTING' | 'MINTED' | 'FAILED' | 'BLOCKED' | 'REFUNDED'
+
+export type PaymentStatus = {
+    paymentId: string
+    status: 'REQUIRES_PAYMENT' | 'PAID' | 'FAILED' | 'REFUNDED'
+    currency: string
+    breakdown: Omit<PriceBreakdown, 'display'>
+    mint: {
+        status: MintJobStatus
+        ownerAddress: string
+        assetId: string | null
+        txSignature: string | null
+        imageUrl: string | null
+        ownershipVerified: boolean
+        estimatedFeeMinor: number
+        actualFeeMinor: number | null
+    } | null
+}
+
 // ---------------------------------------------------------------- marketplace
 
 export const api = {
     health: () => request<{ status: string; version: string }>('/health'),
 
+    // features says which payment rails are live. Read it before rendering a Buy or List
+    // control: with direct crypto switched off those routes 404, and a button that fails on
+    // click is worse than one that was never drawn.
     chains: () =>
         request<{
+            features: { directCrypto: boolean; stripePayments: boolean }
             data: Array<{
                 chain: Chain
                 label: string
@@ -293,6 +358,32 @@ export const api = {
         request<Array<{ publicKey: string; name: string; uri: string }>>(
             `/api/solana/owner${qs({ owner })}`
         ),
+
+    // ---------------------------------------------------------------- stripe rail
+
+    feeQuote: (params: { operation?: string; chain?: string; quantity?: number } = {}) =>
+        request<FeeQuote>(
+            `/api/v1/web3/fees/quote${qs({
+                operation: params.operation ?? 'nft_mint',
+                chain: params.chain ?? 'solana',
+                quantity: params.quantity ?? 1,
+            })}`
+        ),
+
+    createPaymentIntent: (body: {
+        quoteId: string
+        ownerAddress: string
+        name: string
+        metadataUri: string
+    }) =>
+        request<PaymentIntentResponse>('/api/v1/payments/intent', {
+            method: 'POST',
+            body: JSON.stringify(body),
+        }),
+
+    payment: (paymentId: string) => request<PaymentStatus>(`/api/v1/payments/${paymentId}`),
+
+    // ---------------------------------------------------------------- solana (direct)
 
     solanaMint: (body: { uri: string; name: string; owner: string; collection?: string; feeTxSignature?: string }) =>
         request<{ transaction: string; mint: string }>('/api/solana/mint', {

@@ -16,6 +16,19 @@ declare namespace Cloudflare {
         MINT_FEE_TREASURY?: string;    // Solana address that must receive the mint fee
         MEDAL_VAULT_PRIVATE_KEY?: string; // Base58 secret key of the wallet holding unclaimed medals
 
+        // --- stripe rail ---
+        STRIPE_SECRET_KEY?: string;        // Stripe API key; payment routes 503 until it is set
+        STRIPE_WEBHOOK_SECRET?: string;    // whsec_...; the webhook 503s until it is set
+        STRIPE_API_VERSION?: string;       // optional pin; unset means the account default
+        MINT_ASSET_SEED?: string;          // HMAC root for deterministic asset addresses
+        MINT_VAULT_PRIVATE_KEY?: string;   // base58 secret of the wallet that pays for mints
+        MINT_SERVICE_PRICE_MINOR?: string; // Kumele's mint price in EUR cents; default 200
+        TAX_RATE_BPS?: string;             // VAT in basis points; default 0
+        MINT_FEE_FLOOR_MINOR?: string;     // floor on the blockchain fee line; default 15
+        STRIPE_MIN_CHARGE_MINOR?: string;  // Stripe's per-currency minimum; default 50
+        FEE_QUOTE_TTL_SECONDS?: string;    // quote lifetime; default 900
+        ENABLE_DIRECT_CRYPTO?: string;     // "true" reopens the escrow and wallet-mint routes
+
         ADMIN_API_KEY: string; // Admin API key for /api/admin/*; admin routes 503 until it is set
         ADMIN_WALLET_PRIVATE_KEY: string; // Admin wallet private key (base58) for auto-minting reward NFTs
         HYPERDRIVE: Hyperdrive;

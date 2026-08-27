@@ -81,6 +81,7 @@ export const openAPISpec = {
     tags: [
         { name: 'System' },
         { name: 'Marketplace', description: 'Chain-agnostic reads' },
+        { name: 'Payments', description: 'Stripe rail: card payment in, minted NFT out' },
         { name: 'Solana', description: 'Solana devnet operations' },
         { name: 'Ethereum', description: 'Base Sepolia reads' },
         { name: 'Events', description: 'Events and medal rewards' },
@@ -168,6 +169,131 @@ export const openAPISpec = {
                 summary: 'Marketplace totals and per-chain volume',
                 parameters: [{ name: 'days', in: 'query', schema: { type: 'integer', default: 30 } }],
                 responses: ok('Stats'),
+            },
+        },
+        '/api/v1/web3/fees/quote': {
+            get: {
+                tags: ['Payments'],
+                summary: 'Price the blockchain processing fee for a mint',
+                description:
+                    'Kumele\'s platform wallet pays the Solana cost; this is the estimate the buyer ' +
+                    'reimburses on the card payment. Covers the signature fee, the priority fee and ' +
+                    'the asset account\'s rent exemption - rent is about 200x the transaction fee and ' +
+                    'is the dominant term. Persists the quote so the charge is reproducible later.',
+                parameters: [
+                    {
+                        name: 'operation', in: 'query', required: true,
+                        schema: { type: 'string', enum: ['nft_mint'] },
+                    },
+                    {
+                        name: 'chain', in: 'query', required: true,
+                        schema: { type: 'string', enum: ['solana'] },
+                    },
+                    {
+                        name: 'quantity', in: 'query',
+                        schema: { type: 'integer', default: 1, minimum: 1, maximum: 50 },
+                    },
+                ],
+                responses: {
+                    ...ok('A quote, valid until expires_at'),
+                    '400': { description: 'Unsupported operation, chain or quantity' },
+                    '503': { description: 'Database not configured' },
+                },
+            },
+        },
+        '/api/v1/payments/intent': {
+            post: {
+                tags: ['Payments'],
+                summary: 'Start a card payment for a mint',
+                description:
+                    'Every amount is derived server-side from the quote row; the body contributes only ' +
+                    'a quote id, a destination wallet and what to mint. Refuses when the platform ' +
+                    'wallet could not fund the mint, so a buyer is never charged for something that ' +
+                    'cannot be delivered.',
+                requestBody: {
+                    required: true,
+                    content: {
+                        'application/json': {
+                            schema: {
+                                type: 'object',
+                                required: ['quoteId', 'ownerAddress', 'name', 'metadataUri'],
+                                properties: {
+                                    quoteId: { type: 'string' },
+                                    ownerAddress: { type: 'string', description: 'Solana address that will own the NFT' },
+                                    name: { type: 'string', maxLength: 100 },
+                                    metadataUri: { type: 'string', format: 'uri' },
+                                },
+                            },
+                        },
+                    },
+                },
+                responses: {
+                    ...ok('Client secret and the price breakdown'),
+                    '400': { description: 'Invalid body, or the total is below the card minimum' },
+                    '404': { description: 'Unknown quoteId' },
+                    '409': { description: 'The quote has expired' },
+                    '502': { description: 'Stripe refused or was unreachable' },
+                    '503': { description: 'Payments unconfigured, or the mint wallet cannot fund this' },
+                },
+            },
+        },
+        '/api/v1/payments/{paymentId}': {
+            get: {
+                tags: ['Payments'],
+                summary: 'Poll a payment and its mint',
+                description:
+                    'A capability URL: whoever holds the id sees the status. Carries no client secret ' +
+                    'and no mint address until the asset exists on chain.',
+                parameters: [{ name: 'paymentId', in: 'path', required: true, schema: { type: 'string' } }],
+                responses: { ...ok('Payment and mint status'), '404': { description: 'Unknown payment' } },
+            },
+        },
+        '/api/v1/stripe/webhook': {
+            post: {
+                tags: ['Payments'],
+                summary: 'Stripe event sink (not for manual calls)',
+                description:
+                    'Authenticated by an HMAC signature over the raw body, not by an API key. Minting ' +
+                    'begins here and nowhere else. Answers 400 for a bad signature, which will never ' +
+                    'verify on a retry, and 500 when the event was genuine but could not be acted on, ' +
+                    'so Stripe retries it.',
+                responses: {
+                    ...ok('Event acknowledged'),
+                    '400': { description: 'Signature verification failed' },
+                    '500': { description: 'Genuine event, not yet processed - Stripe should retry' },
+                    '503': { description: 'Webhook secret not configured' },
+                },
+            },
+        },
+        '/api/admin/payments': {
+            get: {
+                tags: ['Admin'],
+                summary: 'Payments, and how many are paid but unminted',
+                security: adminSecured,
+                parameters: [
+                    {
+                        name: 'status', in: 'query',
+                        schema: { type: 'string', enum: ['REQUIRES_PAYMENT', 'PAID', 'FAILED', 'REFUNDED'] },
+                    },
+                    { name: 'limit', in: 'query', schema: { type: 'integer', default: 50, maximum: 200 } },
+                ],
+                responses: { ...ok('Payments, with a stranded count'), '400': { description: 'Bad status' } },
+            },
+        },
+        '/api/admin/payments/{paymentId}/refund': {
+            post: {
+                tags: ['Admin'],
+                summary: 'Refund a payment whose mint cannot be delivered',
+                description:
+                    'Refuses when the mint actually succeeded - giving the money back for a delivered ' +
+                    'NFT is a chargeback decision, not an operational one.',
+                security: adminSecured,
+                parameters: [{ name: 'paymentId', in: 'path', required: true, schema: { type: 'string' } }],
+                responses: {
+                    ...ok('Refunded'),
+                    '404': { description: 'Unknown payment' },
+                    '409': { description: 'Already refunded, or the NFT was delivered' },
+                },
             },
         },
         '/api/settle': {

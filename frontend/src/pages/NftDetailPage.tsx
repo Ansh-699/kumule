@@ -92,6 +92,16 @@ export const NftDetailPage = () => {
         enabled: Boolean(assetId),
     })
 
+    // Which rails are live. With direct crypto switched off the Solana escrow routes 404, so
+    // the controls that call them must not be drawn at all - a Buy button that fails on click
+    // is worse than one that was never there.
+    const { data: chainInfo } = useQuery({
+        queryKey: ['chains'],
+        queryFn: () => api.chains(),
+        staleTime: 5 * 60_000,
+    })
+    const directCrypto = chainInfo?.features?.directCrypto ?? false
+
     const { data: contracts } = useQuery({
         queryKey: ['evm-contracts'],
         queryFn: () => api.evmContracts(),
@@ -473,7 +483,7 @@ export const NftDetailPage = () => {
                                         <p className="rounded-xl bg-white/[0.03] p-3 text-sm text-white/50">
                                             This is your listing.
                                         </p>
-                                        {nft.chain === 'SOLANA' && (
+                                        {nft.chain === 'SOLANA' && directCrypto && (
                                             <button
                                                 onClick={cancelSolana}
                                                 disabled={busy}
@@ -483,6 +493,11 @@ export const NftDetailPage = () => {
                                             </button>
                                         )}
                                     </div>
+                                ) : nft.chain === 'SOLANA' && !directCrypto ? (
+                                    <p className="mt-4 rounded-xl bg-white/[0.03] p-3 text-sm text-white/50">
+                                        Buying on Solana is paused while payments move to card.
+                                        This listing is still live on chain.
+                                    </p>
                                 ) : (
                                     <button
                                         onClick={nft.chain === 'ETHEREUM' ? buyEvm : buySolana}
@@ -494,6 +509,10 @@ export const NftDetailPage = () => {
                                     </button>
                                 )}
                             </>
+                        ) : isOwner && nft.chain === 'SOLANA' && !directCrypto ? (
+                            <p className="text-sm text-white/50">
+                                Listing on Solana is paused while payments move to card.
+                            </p>
                         ) : isOwner ? (
                             <>
                                 <div className="text-xs uppercase tracking-wider text-white/40">List for sale</div>
