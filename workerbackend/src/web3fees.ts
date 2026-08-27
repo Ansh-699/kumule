@@ -27,7 +27,7 @@
 import { Context } from 'hono'
 import { CHAIN_CONFIG, fromBaseUnits, ceilDiv } from './chains'
 import { rpc, rentExemptLamports } from './solana'
-import { getSolEurRate, lamportsToEurMinor, formatMinor, type SolRate } from './fx'
+import { getSolEurRate, lamportsToEurMinor, formatMinor, type SolRate, type RateHint } from './fx'
 import { mintPricing } from './config'
 import { withPrisma, getConnectionString } from './db'
 
@@ -158,14 +158,15 @@ export const MAX_QUANTITY = 50
 export const quoteMintFee = async (
     env: CloudflareBindings,
     quantity = 1,
-    assetBytes: number = DEFAULT_ASSET_BYTES
+    assetBytes: number = DEFAULT_ASSET_BYTES,
+    rateHint: RateHint = null
 ): Promise<MintFeeQuote> => {
     const pricing = mintPricing(env)
 
     const [priority, rentFromChain, rate] = await Promise.all([
         estimatePriorityFee(env),
         rentExemptLamports(env, assetBytes),
-        getSolEurRate(),
+        getSolEurRate(rateHint),
     ])
 
     // (128 + bytes) * 6960 is the runtime's own formula, used only when the cluster will not
@@ -285,7 +286,20 @@ export const getFeeQuote = async (c: Context<{ Bindings: CloudflareBindings }>) 
     if (!connectionString) return c.json({ error: 'Database not configured' }, 503)
 
     try {
-        const quote = await quoteMintFee(c.env, quantity, assetBytes)
+        // The most recent quote is a record of a rate that was genuinely true. Read before
+        // pricing, not during: quoteMintFee does network I/O, and holding a pooled Neon
+        // connection across a remote fetch is how a slow oracle becomes a database problem.
+        const previous = await withPrisma(connectionString, (prisma) =>
+            prisma.feeQuote.findFirst({
+                orderBy: { createdAt: 'desc' },
+                select: { rateScaled: true, createdAt: true },
+            })
+        ).catch(() => null)
+        const rateHint: RateHint = previous
+            ? { scaled: previous.rateScaled, at: previous.createdAt.getTime() }
+            : null
+
+        const quote = await quoteMintFee(c.env, quantity, assetBytes, rateHint)
         const row = await withPrisma(connectionString, (prisma) =>
             prisma.feeQuote.create({
                 data: {

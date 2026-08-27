@@ -20,18 +20,32 @@ const TTL_MS = 5 * 60_000
 const RATE_URL = 'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=eur'
 
 /**
- * Used only when the oracle has never answered in this isolate. Deliberately conservative:
- * over-estimating SOL over-charges the blockchain fee by a cent or two, while
- * under-estimating means Kumele quietly funds the difference on every mint.
+ * Used only when the oracle has never answered, this isolate has no memo, AND the database
+ * holds no recent quote to borrow a rate from.
+ *
+ * Deliberately far above the market so it can never under-charge. That also means it
+ * over-charges - at a real rate near EUR 90 this bills roughly double - which is why every
+ * other source is tried first rather than this being a casual default.
  */
 const FALLBACK_EUR_PER_SOL = '200'
 
 export type SolRate = {
     /** EUR per SOL, scaled by 10^RATE_DECIMALS. */
     scaled: bigint
-    source: 'coingecko' | 'coingecko_stale' | 'static_fallback'
+    source: 'coingecko' | 'coingecko_cached' | 'coingecko_stale' | 'last_known' | 'static_fallback'
     live: boolean
 }
+
+/**
+ * A rate this deployment has seen before, read from the most recent quote row.
+ *
+ * Every FeeQuote stores the rate it used, so the database is already a record of the last
+ * rate that was actually true - it just was not being read back. This exists because the
+ * module memo is per-isolate and Workers isolates are cold constantly, while the free tier
+ * of the price API rate-limits after a handful of calls. Without this, a large share of
+ * production traffic would price against the static constant.
+ */
+export type RateHint = { scaled: bigint; at: number } | null
 
 // Module scope, so it survives across requests in the same isolate but never outlives it.
 // ponytail: per-isolate memo, not shared. Move to the Cache API or KV if the oracle starts
@@ -74,9 +88,18 @@ export const fallbackRate = (): SolRate => ({
  * price API is down, and the caller reports which source answered rather than pretending
  * a fallback is a live quote.
  */
-export const getSolEurRate = async (): Promise<SolRate> => {
+export const getSolEurRate = async (hint: RateHint = null): Promise<SolRate> => {
     const now = Date.now()
     if (memo && now - memo.at < TTL_MS) return memo.rate
+
+    // A recently persisted rate is as good as this isolate's own memo, and using it avoids a
+    // call that is rate-limited in practice. Measured: the free endpoint starts answering 429
+    // after about four requests.
+    if (hint && now - hint.at < TTL_MS) {
+        const rate: SolRate = { scaled: hint.scaled, source: 'coingecko_cached', live: true }
+        memo = { rate, at: hint.at }
+        return rate
+    }
 
     try {
         const res = await fetch(RATE_URL, { headers: { accept: 'application/json' } })
@@ -95,9 +118,12 @@ export const getSolEurRate = async (): Promise<SolRate> => {
         console.error('sol/eur rate fetch failed:', e)
     }
 
-    // A stale real rate beats a hard-coded one: it was true within the hour, and the
-    // constant may be months out of date.
+    // Ordered by how close each is to the truth. A rate that was real an hour ago beats a
+    // constant that was written months ago, and the constant is deliberately far above the
+    // market so it never under-charges - which also means it over-charges badly, so it is
+    // genuinely the last resort.
     if (memo) return { ...memo.rate, source: 'coingecko_stale', live: false }
+    if (hint) return { scaled: hint.scaled, source: 'last_known', live: false }
     return fallbackRate()
 }
 
