@@ -474,7 +474,15 @@ export const NftDetailPage = () => {
                                     <span className={ui.accent}>{nft.listing.currency}</span>
                                 </div>
 
-                                {!walletConnected ? (
+                                {/* The flag is checked before the wallet, deliberately. The other
+                                    order asks someone to connect a wallet for an action that is
+                                    switched off, and only tells them once they have. */}
+                                {nft.chain === 'SOLANA' && !directCrypto ? (
+                                    <p className="mt-4 rounded-xl bg-white/[0.03] p-3 text-sm text-white/50">
+                                        Buying on Solana is paused while payments move to card.
+                                        This listing is still live on chain.
+                                    </p>
+                                ) : !walletConnected ? (
                                     <div className="mt-4">
                                         <ConnectForChain chain={nft.chain} action="buy this NFT" />
                                     </div>
@@ -493,11 +501,6 @@ export const NftDetailPage = () => {
                                             </button>
                                         )}
                                     </div>
-                                ) : nft.chain === 'SOLANA' && !directCrypto ? (
-                                    <p className="mt-4 rounded-xl bg-white/[0.03] p-3 text-sm text-white/50">
-                                        Buying on Solana is paused while payments move to card.
-                                        This listing is still live on chain.
-                                    </p>
                                 ) : (
                                     <button
                                         onClick={nft.chain === 'ETHEREUM' ? buyEvm : buySolana}

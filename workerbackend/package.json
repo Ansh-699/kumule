@@ -12,7 +12,9 @@
     "//check:units": "db-flows needs a Postgres and skips loudly without one; see the header of db-flows-check.ts.",
     "check:units": "for c in security audit burn escrow mint auth-parity openapi searchnftbyasset searchnftbyowner nfts-price admin-range chains stripe web3fees mintjob flags db-flows payment-flows; do echo \"--- $c ---\"; tsx \"$c-check.ts\" || exit 1; done",
     "test:api": "node api-test.mjs",
-    "test:security": "tsx security-check.ts"
+    "test:security": "tsx security-check.ts",
+    "//test:devnet": "Mints for real on devnet: needs a local Postgres and either a working faucet or a funded ~/.config/solana/id.json. Skips loudly without them. Run before a deploy, not on every save.",
+    "test:devnet": "tsx devnet-mint-check.ts"
   },
   "dependencies": {
     "@metaplex-foundation/mpl-core": "^1.7.0",

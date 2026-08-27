@@ -20,7 +20,7 @@ import { createServer, type Server } from 'node:http'
 import { Hono } from 'hono'
 import { PublicKey } from '@solana/web3.js'
 import { startLocalNeonProxy, resetDatabase, inspect, POSTGRES_URL } from './db-harness'
-import { getFeeQuote } from './src/web3fees'
+import { getFeeQuote, CORE_CREATE_FEE_LAMPORTS } from './src/web3fees'
 import { createIntent, getPayment, stripeWebhook } from './src/payments'
 import { signPayloadForTest } from './src/stripe'
 import { withPrisma } from './src/db'
@@ -178,10 +178,19 @@ const run = async () => {
         eq('operation', quote.operation, 'nft_mint')
         eq('fee_payer is the platform', quote.fee_payer, 'kumele_platform_wallet')
         eq('charged_to_user', quote.charged_to_user, true)
-        // Rent dominates: the stub returns 2,035,360 for rent, plus 10,000 signature and
-        // 10,000 priority. Quoting only the transaction fee would be roughly half of this.
-        eq('the fee includes rent, not just the transaction fee',
-            quote.estimated_network_fee.lamports, 2_055_360)
+        // Composition, not a magic number. The stub returns 2,035,360 for rent; on top of that
+        // sit Metaplex's 1,500,000 protocol fee for creating a Core asset and 20,000 of
+        // signature and priority fees.
+        //
+        // Both of the big terms are invisible if you reason from the transaction fee alone,
+        // and the protocol fee is invisible even if you reason from rent - it is deposited
+        // into the asset account and no rent calculation knows about it. A real devnet mint
+        // measured 3,225,200; quoting only the transaction fee would have charged 20,000.
+        const fee = quote.estimated_network_fee.lamports
+        eq('the fee covers rent, the protocol fee and the transaction fees',
+            fee, 2_035_360 + Number(CORE_CREATE_FEE_LAMPORTS) + 20_000)
+        eq('which is dominated by rent and the protocol fee, not the transaction fee',
+            fee - 20_000 > fee * 0.9, true)
 
         const storedQuote: any = await inspect((p: any) => p.feeQuote.findUnique({ where: { id: quote.quote_id } }))
         if (storedQuote) ok('the quote is persisted for later reconciliation')

@@ -29,7 +29,7 @@ import { createV1, fetchAsset } from '@metaplex-foundation/mpl-core'
 import { base58 } from '@metaplex-foundation/umi/serializers'
 import { getUmi, withPriorityFees } from './umi'
 import { solanaRpc, makeAssetId, fromBaseUnits } from './chains'
-import { verifySolanaTransaction, readFeePayerCost } from './solana'
+import { verifySolanaTransaction, readFeePayerCost, rpc } from './solana'
 import { resolveMetadata } from './metadata'
 import { withPrisma, ensureUser } from './db'
 import { auditedTransactionData } from './audit'
@@ -144,6 +144,23 @@ export const readAssetState = async (
 }
 
 /**
+ * Ask DAS who owns an asset.
+ *
+ * Returns null - never throws, never guesses - when the RPC is not Helius, when the method is
+ * unsupported, or when the indexer has not caught up yet. A null here is "DAS could not tell
+ * us", which is a different statement from "the owner is wrong", so the caller falls back to
+ * reading the account rather than treating it as a failed mint.
+ */
+export const verifyOwnershipViaDas = async (
+    env: CloudflareBindings,
+    assetId: string
+): Promise<string | null> => {
+    if (!(env.SOLANA_RPC_URL ?? '').includes('helius')) return null
+    const result = await rpc<{ ownership?: { owner?: string } }>(env, 'getAsset', [{ id: assetId }])
+    return result?.ownership?.owner ?? null
+}
+
+/**
  * Send and wait, bounded by the Worker request budget.
  *
  * Same shape as medals.ts's sendWithBoundedConfirm and for the same reason: umi's
@@ -230,6 +247,22 @@ export const runMintJob = async (
 
     if (!claimed) return 'not-claimed'
 
+    // Checked here, immediately after the claim, rather than in the catch below - because the
+    // path most likely to loop does not throw. A mint that is sent but never confirms takes
+    // the `retry` branch, which used to skip the cap entirely: an unfunded vault or a stuck
+    // chain would re-send every five minutes forever while the buyer stayed charged and no
+    // refund ever fired. One guard at the top covers every way out of this function.
+    if (claimed.attempts > MAX_MINT_ATTEMPTS) {
+        console.error(`[MINTJOB ${jobId}] giving up after ${claimed.attempts} attempts; refunding`)
+        await refundJob(
+            env,
+            connectionString,
+            jobId,
+            `mint did not complete after ${MAX_MINT_ATTEMPTS} attempts: ${claimed.lastError ?? 'no further detail'}`
+        )
+        return 'refunded'
+    }
+
     const fail = async (reason: string, terminal: boolean) => {
         await withPrisma(connectionString, (prisma) =>
             prisma.mintJob.update({
@@ -315,13 +348,22 @@ export const runMintJob = async (
             }
         }
 
-        // Ownership, verified rather than assumed. DAS only where it exists - it is a Helius
-        // extension and the public devnet endpoint does not serve it - otherwise the Core
-        // account itself, which is the same read readAssetState already knows how to do.
-        let owner = state.kind === 'minted' ? state.owner : null
-        let ownershipSource = state.kind === 'minted' ? 'account_read' : null
-        if (!owner) {
-            const after = await readAssetState(umi, derived)
+        // Ownership, verified rather than assumed.
+        //
+        // DAS first, because it is the index the rest of the ecosystem reads - an asset that
+        // exists on chain but has not reached the indexer is invisible to wallets, so
+        // confirming it there is a stronger statement than reading the account we just wrote.
+        // It is a Helius extension though, and the public devnet endpoint does not serve it,
+        // so the Core account read is the fallback rather than the exception.
+        let owner: string | null = null
+        let ownershipSource: string | null = null
+
+        const indexed = await verifyOwnershipViaDas(env, derived)
+        if (indexed) {
+            owner = indexed
+            ownershipSource = 'das'
+        } else {
+            const after = state.kind === 'minted' ? state : await readAssetState(umi, derived)
             if (after.kind === 'minted') {
                 owner = after.owner
                 ownershipSource = 'account_read'
@@ -451,10 +493,8 @@ export const runMintJob = async (
         const reason = e?.message ?? String(e)
         console.error(`[MINTJOB ${jobId}] failed:`, e)
 
-        if (claimed.attempts >= MAX_MINT_ATTEMPTS) {
-            await refundJob(env, connectionString, jobId, `mint failed after ${claimed.attempts} attempts: ${reason}`)
-            return 'refunded'
-        }
+        // No cap check here: the guard at the top of the next attempt owns that decision, so
+        // every retry path - thrown or returned - reaches it the same way.
         await fail(reason, false)
         return 'retry'
     }

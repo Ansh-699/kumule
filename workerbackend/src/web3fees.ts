@@ -7,14 +7,22 @@
 //
 // What a mint actually costs, in the order the numbers matter:
 //
-//   rent exemption   ~2,000,000 lamports   a new account must be rent-exempt at creation,
-//                                          and the platform never gets it back because the
-//                                          asset ends up owned by the buyer
-//   priority fee        ~10,000 lamports   what withPriorityFees actually attaches
-//   signature fee        ~10,000 lamports  5,000 per signature, and a mint has two
+// What a mint actually costs, measured on devnet rather than reasoned about:
 //
-// Rent is roughly two hundred times the transaction fee. Quoting only the transaction fee -
-// which is the obvious thing to do - under-charges by about half.
+//   MPL Core fee      1,500,000 lamports   Metaplex charges a flat protocol fee to create an
+//                                          asset. It is deposited into the asset account on
+//                                          top of rent, so it does not appear in any rent
+//                                          calculation and is invisible until you diff a real
+//                                          fee payer's balance.
+//   rent exemption   ~1,700,000 lamports   a new account must be rent-exempt at creation
+//   priority fee         10,000 lamports   what withPriorityFees actually attaches
+//   signature fee        10,000 lamports   5,000 per signature, and a mint has two
+//
+// A real devnet mint came to 3,225,200 lamports against an account holding 3,205,200 for
+// 117 bytes of data - rent for which is 1,705,200. The 1,500,000 difference is the protocol
+// fee, and leaving it out under-charged by about a third on every mint.
+//
+// The transaction fee, the number everyone reaches for first, is 0.6% of the total.
 
 import { Context } from 'hono'
 import { CHAIN_CONFIG, fromBaseUnits, ceilDiv } from './chains'
@@ -29,12 +37,24 @@ const LAMPORTS_PER_SIGNATURE = 5_000n
 const SIGNATURES_PER_MINT = 2n
 
 /**
+ * Metaplex's flat protocol fee for creating a Core asset.
+ *
+ * Not rent, and not a transaction fee: it lands in the asset account alongside the rent, so
+ * getMinimumBalanceForRentExemption does not know about it and nothing on chain will tell you
+ * it is coming. Measured by diffing a real fee payer's balance across a devnet mint - the
+ * account held exactly 1,500,000 lamports more than its rent-exempt minimum.
+ */
+const MPL_CORE_CREATE_FEE = 1_500_000n
+
+/**
  * Compute budget the mint transaction asks for, and the price it offers per unit. These are
  * the defaults withPriorityFees already applies, kept here so the fee we quote is the fee we
  * actually attach - quoting a priority fee and then sending a transaction without one is
  * charging for something we did not buy.
  */
 export const COMPUTE_UNITS = 200_000
+/** Exported so a check can assert the quote covers what a real mint actually costs. */
+export const CORE_CREATE_FEE_LAMPORTS = MPL_CORE_CREATE_FEE
 export const PRIORITY_MICRO_LAMPORTS = 50_000
 
 /** Priority fee in lamports implied by a micro-lamport-per-compute-unit price. */
@@ -44,13 +64,15 @@ const priorityLamports = (microLamportsPerCu: number): bigint =>
 /**
  * Bytes to reserve when asking the cluster for a rent-exempt minimum.
  *
- * An MPL Core AssetV1 is 83 bytes of fixed fields plus the name and the URI, and at quote
- * time neither is known - the contract is operation + chain + quantity. This is a generous
- * upper bound on a real one (a 32-character name and a 100-character R2 URL), and being
- * generous is the correct direction: over-estimating costs the buyer about a cent, while
- * under-estimating costs Kumele the difference forever.
+ * A real devnet asset with a 10-character name and a 32-character URI measured 117 bytes, so
+ * the fixed part is about 75 and the rest is whatever the name and URI cost. At quote time
+ * neither is known - the contract is operation + chain + quantity - so this allows for a
+ * 40-character name and a 120-character R2 URL.
+ *
+ * Erring high is the correct direction: over-estimating costs the buyer a fraction of a cent,
+ * while under-estimating costs Kumele the difference on every mint, forever.
  */
-const ASSET_ACCOUNT_BYTES = 220
+const ASSET_ACCOUNT_BYTES = 200
 
 export type FeeSource =
     | 'helius_priority_fee_estimate'
@@ -127,7 +149,11 @@ export const quoteMintFee = async (
     // account, both of which are the documented figures.
     const rent = rentFromChain ?? BigInt(128 + ASSET_ACCOUNT_BYTES) * 6_960n
 
-    const perMint = LAMPORTS_PER_SIGNATURE * SIGNATURES_PER_MINT + priority.lamports + rent
+    const perMint =
+        LAMPORTS_PER_SIGNATURE * SIGNATURES_PER_MINT +
+        priority.lamports +
+        rent +
+        MPL_CORE_CREATE_FEE
     const networkFeeLamports = perMint * BigInt(quantity)
 
     const converted = lamportsToEurMinor(networkFeeLamports, rate.scaled)
