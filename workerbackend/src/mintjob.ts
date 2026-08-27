@@ -493,9 +493,13 @@ export const runMintJob = async (
                         // float operation and this column is money. It is also the exact
                         // string form Postgres hands back, which is what keeps the row's
                         // own checksum verifying after the round trip.
+                        // null, not '0'. A cost we could not read is unknown, and writing
+                        // zero asserts the mint was free - which is never true and quietly
+                        // corrupts any reconciliation that sums this column. The backfill in
+                        // the sweep fills it in once the RPC will answer.
                         amount:
                             actualFeeLamports === null
-                                ? '0'
+                                ? null
                                 : fromBaseUnits(actualFeeLamports, 'SOLANA'),
                         txHash: signature,
                         assetId,
@@ -621,6 +625,81 @@ export const refundJob = async (
         console.error(`[MINTJOB ${jobId}] refund failed, payment left PAID for retry: ${refund.message}`)
     }
     return refund.ok
+}
+
+/**
+ * Fill in costs the mint itself could not read.
+ *
+ * readFeePayerCost runs seconds after the transaction confirms, and a rate-limited or
+ * lagging node answers with nothing. That happened on the first real production mint: the
+ * asset existed, the buyer had it, and the platform's own cost was recorded as unknown -
+ * permanently, because nothing looked at it again. Estimated-versus-actual, the entire point
+ * of storing both, was silently broken for that order.
+ *
+ * Cheap and bounded: only MINTED jobs that have a signature and no cost yet, a few per tick.
+ */
+export const backfillMintCosts = async (
+    env: CloudflareBindings,
+    connectionString: string,
+    limit = 5
+): Promise<number> => {
+    const vault = platformSigner(env)
+    if (!vault) return 0
+
+    const pending = await withPrisma(connectionString, (prisma) =>
+        prisma.mintJob.findMany({
+            where: { status: 'MINTED', actualFeeLamports: null, txSignature: { not: null } },
+            orderBy: { updatedAt: 'asc' },
+            take: limit,
+            select: { id: true, txSignature: true, ownerAddress: true, payment: { select: { quote: true } } },
+        })
+    )
+    if (pending.length === 0) return 0
+
+    let filled = 0
+    for (const job of pending) {
+        const cost = await readFeePayerCost(env, job.txSignature!, vault.address)
+        if (!cost) continue
+
+        const quoteRate = job.payment.quote?.rateScaled ?? null
+        let actualFeeMinor: number | null = null
+        if (quoteRate) {
+            try {
+                actualFeeMinor = lamportsToEurMinor(cost.lamports, quoteRate)
+            } catch { /* an implausible rate is not worth failing a backfill over */ }
+        }
+
+        await withPrisma(connectionString, async (prisma) => {
+            await prisma.mintJob.update({
+                where: { id: job.id },
+                data: { actualFeeLamports: cost.lamports, actualFeeMinor },
+            })
+            // The audit row was written with a null amount for the same reason. Rebuilt
+            // through auditedTransactionData rather than patched, so its checksum still
+            // describes the row it is attached to.
+            const existing = await prisma.transaction.findUnique({ where: { txHash: job.txSignature! } })
+            if (existing) {
+                const meta = (existing.metadata ?? {}) as Record<string, any>
+                await prisma.transaction.update({
+                    where: { txHash: job.txSignature! },
+                    data: await auditedTransactionData({
+                        chain: 'SOLANA',
+                        kind: existing.kind,
+                        status: existing.status,
+                        userId: existing.userId,
+                        walletAddress: existing.walletAddress,
+                        amount: fromBaseUnits(cost.lamports, 'SOLANA'),
+                        txHash: job.txSignature!,
+                        assetId: meta.assetId ?? null,
+                        metadata: { ...meta, costBackfilled: true },
+                    }),
+                })
+            }
+        })
+        filled++
+    }
+    if (filled > 0) console.log(`[SWEEP] backfilled cost for ${filled} mint(s)`)
+    return filled
 }
 
 /**

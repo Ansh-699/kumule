@@ -7,6 +7,7 @@
 import {
     parseChain, isChain, chainFromAddress, isValidAddress, isSolanaAddress, normalizeAddress,
     makeAssetId, parseAssetId, fromBaseUnits, toBaseUnits, CHAIN_CONFIG,
+    solanaRpcChain, SOLANA_RPC_FALLBACKS,
 } from './src/chains'
 
 let failures = 0
@@ -126,6 +127,22 @@ for (const [chain, values] of [
         eq(`${chain} ${v}`, fromBaseUnits(toBaseUnits(v, chain), chain), v)
     }
 }
+
+console.log('\nrpc chain:')
+// A single endpoint is a single point of failure, and both obvious choices failed in one
+// afternoon: the configured provider ran out of credits (429) and Solana's own public
+// endpoint refused Cloudflare egress (403), leaving a paid mint unfulfilled.
+eq('the configured endpoint is tried first',
+    solanaRpcChain({ SOLANA_RPC_URL: 'https://mine.example' } as any)[0], 'https://mine.example')
+eq('with fallbacks behind it',
+    solanaRpcChain({ SOLANA_RPC_URL: 'https://mine.example' } as any).length, SOLANA_RPC_FALLBACKS.length + 1)
+eq('an unset endpoint still yields a usable chain',
+    solanaRpcChain({} as any).length, SOLANA_RPC_FALLBACKS.length)
+// Trying the same dead endpoint twice is not a fallback.
+eq('no duplicates when the configured one is also a fallback',
+    solanaRpcChain({ SOLANA_RPC_URL: SOLANA_RPC_FALLBACKS[0] } as any).length, SOLANA_RPC_FALLBACKS.length)
+eq('every entry is an https url',
+    solanaRpcChain({} as any).every((u) => u.startsWith('https://')), true)
 
 console.log('\nconfig:')
 eq('SOL currency', CHAIN_CONFIG.SOLANA.currency, 'SOL')

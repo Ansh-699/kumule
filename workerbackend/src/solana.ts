@@ -4,7 +4,7 @@
 // webhooks. Commerce shut down 2026-03-31, so that file is gone, but this function is the
 // backbone of on-chain payment verification and belongs with the other chain plumbing.
 
-import { solanaRpc, fromBaseUnits } from './chains'
+import { solanaRpcChain, fromBaseUnits } from './chains'
 
 type RpcResult<T> = { result?: T; error?: { message?: string } }
 
@@ -18,26 +18,38 @@ export const rpc = async <T>(
     method: string,
     params: unknown[]
 ): Promise<T | null> => {
-    try {
-        const res = await fetch(solanaRpc(env), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-        })
-        if (!res.ok) {
-            console.error(`solana rpc ${method} http ${res.status}`)
-            return null
+    // Tried in order rather than against one endpoint, because in practice they fail: a
+    // provider runs out of credits (429) or refuses Cloudflare egress outright (403), and a
+    // single dead endpoint is enough to leave a paid mint unfulfilled.
+    for (const endpoint of solanaRpcChain(env)) {
+        try {
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+            })
+            if (!res.ok) {
+                console.warn(`solana rpc ${method} http ${res.status} from ${new URL(endpoint).host}`)
+                continue
+            }
+            const body = (await res.json()) as RpcResult<T>
+            if (body.error) {
+                // A JSON-RPC error can mean either "this node will not serve you" or "the
+                // answer is genuinely an error". Rate limiting and auth are worth retrying
+                // elsewhere; anything else is the node answering the question, so take it.
+                const message = body.error.message ?? ''
+                const transport = /rate|limit|429|403|forbidden|blocked|unauthor|credit|usage/i.test(message)
+                console.warn(`solana rpc ${method} error from ${new URL(endpoint).host}: ${message}`)
+                if (transport) continue
+                return null
+            }
+            return body.result ?? null
+        } catch (e) {
+            console.warn(`solana rpc ${method} threw against ${new URL(endpoint).host}:`, e)
         }
-        const body = (await res.json()) as RpcResult<T>
-        if (body.error) {
-            console.error(`solana rpc ${method} error:`, body.error.message)
-            return null
-        }
-        return body.result ?? null
-    } catch (e) {
-        console.error(`solana rpc ${method} threw:`, e)
-        return null
     }
+    console.error(`solana rpc ${method}: every endpoint failed`)
+    return null
 }
 
 /**

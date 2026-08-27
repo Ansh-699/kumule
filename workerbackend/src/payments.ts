@@ -13,7 +13,7 @@ import { mintPricing, taxOn, directCryptoEnabled, MINT_LEASE_MS } from './config
 import { assetBytesFor, utf8Bytes, MAX_NAME_BYTES, MAX_URI_BYTES } from './web3fees'
 import { formatMinor } from './fx'
 import { createPaymentIntent, verifyWebhookSignature } from './stripe'
-import { platformSigner, runMintJob, sweepMintJobs, refundJob } from './mintjob'
+import { platformSigner, runMintJob, sweepMintJobs, refundJob, backfillMintCosts } from './mintjob'
 import { logSecurityEvent } from './audit'
 
 /**
@@ -612,6 +612,9 @@ export const scheduled = async (
         return
     }
 
+    await backfillMintCosts(env, connectionString).catch((e) =>
+        console.error('[CRON] cost backfill failed:', e)
+    )
     await pruneAbandonedQuotes(env, connectionString)
 }
 

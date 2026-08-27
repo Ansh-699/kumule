@@ -231,7 +231,28 @@ export const ceilDiv = (a: bigint, b: bigint): bigint => (a + b - 1n) / b
 
 /** Solana RPC, falling back to public devnet like every other call site in the worker. */
 export const solanaRpc = (env: CloudflareBindings): string =>
-    env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'
+    env.SOLANA_RPC_URL || SOLANA_RPC_FALLBACKS[0]
+
+/**
+ * Endpoints to try, in order, when a read fails.
+ *
+ * Not paranoia - measured. In one afternoon the configured provider returned
+ * `429 max usage reached` (credits exhausted) and Solana Labs' own public endpoint returned
+ * `403 Your IP or provider is blocked from this endpoint`, because it refuses Cloudflare
+ * egress. Both of the obvious choices, both dead, and a paid mint sat unfulfilled behind
+ * them. Every keyless endpoint rate-limits, so the answer is several rather than a better one.
+ */
+export const SOLANA_RPC_FALLBACKS = [
+    'https://solana-devnet.api.onfinality.io/public',
+    'https://api.devnet.solana.com',
+] as const
+
+/** The configured endpoint first, then the fallbacks, with no duplicates. */
+export const solanaRpcChain = (env: CloudflareBindings): string[] => {
+    const configured = env.SOLANA_RPC_URL
+    const chain = configured ? [configured, ...SOLANA_RPC_FALLBACKS] : [...SOLANA_RPC_FALLBACKS]
+    return [...new Set(chain)]
+}
 
 /**
  * Base Sepolia RPC. Defaults to publicnode, not sepolia.base.org: the official endpoint
