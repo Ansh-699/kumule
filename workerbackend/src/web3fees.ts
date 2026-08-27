@@ -291,6 +291,15 @@ export const getFeeQuote = async (c: Context<{ Bindings: CloudflareBindings }>) 
         // connection across a remote fetch is how a slow oracle becomes a database problem.
         const previous = await withPrisma(connectionString, (prisma) =>
             prisma.feeQuote.findFirst({
+                // Only quotes whose rate was genuinely live. confidence is 'estimated' only
+                // when the oracle answered AND the chain confirmed the rent, so this cannot
+                // pick up a row that was itself priced from the static fallback.
+                //
+                // Without the filter the fallback poisons the chain: the first quote of a cold
+                // deployment falls back, persists that constant, and every later quote borrows
+                // it and labels it 'cached' - a made-up number laundered into something that
+                // claims to be a live rate, permanently.
+                where: { confidence: 'estimated' },
                 orderBy: { createdAt: 'desc' },
                 select: { rateScaled: true, createdAt: true },
             })

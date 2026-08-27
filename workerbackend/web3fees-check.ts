@@ -19,7 +19,7 @@
 import { parseDecimal, ceilDiv, fromBaseUnits } from './src/chains'
 import {
     lamportsToEurMinor, formatMinor, parseEurRate, RATE_DECIMALS,
-    getSolEurRate, fallbackRate, __setRateMemoForTests,
+    getSolEurRate, fallbackRate, __setRateMemoForTests, extractRate,
 } from './src/fx'
 import { taxOn, intEnv, mintPricing } from './src/config'
 import {
@@ -143,7 +143,7 @@ const run = async () => {
         const fresh = await getSolEurRate({ scaled: HINT_SCALED, at: now })
         eq('a recent persisted rate is used as-is', fresh.scaled.toString(), HINT_SCALED.toString())
         eq('and counts as live', fresh.live, true)
-        eq('labelled honestly', fresh.source, 'coingecko_cached')
+        eq('labelled honestly', fresh.source, 'cached')
 
         // With the oracle unreachable - the only time this ordering matters at all. The first
         // version of this test let the real network answer, and the code correctly returned a
@@ -151,7 +151,7 @@ const run = async () => {
         const realFetch = globalThis.fetch
         globalThis.fetch = (async (input: any, init?: any) => {
             const url = typeof input === 'string' ? input : input?.url ?? String(input)
-            if (url.includes('coingecko')) throw new Error('simulated outage')
+            if (/coingecko|binance|kraken/.test(url)) throw new Error('simulated outage')
             return realFetch(input, init)
         }) as typeof fetch
         try {
@@ -187,6 +187,28 @@ const run = async () => {
         eq('the constant over-charges, which is why it is last', constantFee > realFee * 2 - 1, true)
         __setRateMemoForTests(null)
     }
+
+    console.log('')
+    console.log('each price source is parsed from its own real response shape:')
+
+    // Bodies captured from the live endpoints. Each publishes a different shape, and a regex
+    // written against the wrong one silently yields null and drops that source - which is how
+    // production ended up pricing against the static constant in the first place.
+    const bodies: [string, string, string][] = [
+        ['binance', '{"symbol":"SOLEUR","price":"89.81000000"}', '8981000000'],
+        ['kraken', '{"error":[],"result":{"SOLEUR":{"a":["89.83000","42","42.000"],"b":["89.82000","24","24.000"],"c":["89.80000","16.45327000"]}}}', '8980000000'],
+        ['coingecko', '{"solana":{"eur":89.76}}', '8976000000'],
+    ]
+    for (const [name, body, want] of bodies) {
+        eq(`${name} parses to an exact scaled integer`, extractRate(name, body)?.toString(), want)
+    }
+    // They agree to within a few cents, which is what makes falling through between them safe
+    // rather than a silent repricing.
+    const spread = bodies.map(([n, b]) => Number(extractRate(n, b)))
+    eq('the sources agree within 1%', (Math.max(...spread) - Math.min(...spread)) / Math.min(...spread) < 0.01, true)
+    eq('a body from the wrong source yields null, not a wrong number',
+        extractRate('binance', '{"solana":{"eur":89.76}}'), null)
+    eq('garbage yields null', extractRate('kraken', '<html>rate limited</html>'), null)
 
     console.log('')
     console.log('money renders without a float:')

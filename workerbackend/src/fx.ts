@@ -17,7 +17,39 @@ const RATE_SCALE = 10n ** BigInt(RATE_DECIMALS)
 const LAMPORTS_PER_SOL = 10n ** 9n
 
 const TTL_MS = 5 * 60_000
-const RATE_URL = 'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=eur'
+
+/**
+ * Where to ask, in order.
+ *
+ * More than one because CoinGecko - the obvious choice - turned out to be unreachable from
+ * Cloudflare Workers in practice: the first live quote on production came back labelled
+ * `fallback`, priced against the static constant, and over-charged by more than double. Free
+ * price endpoints commonly refuse datacentre egress, and one that works from a laptop tells
+ * you nothing about one that works from a Worker.
+ *
+ * Every extractor pulls the number out as a STRING with a regex over the raw body. Not
+ * res.json(): that turns the digits into a double before anything can protect them.
+ * Binance is first because it publishes the price as a string already, so there is no
+ * question about what its own serialiser did to it.
+ */
+const SOURCES: { name: SolRate['source']; url: string; extract: (body: string) => string | null }[] = [
+    {
+        name: 'binance',
+        url: 'https://api.binance.com/api/v3/ticker/price?symbol=SOLEUR',
+        extract: (b) => /"price"\s*:\s*"(\d+(?:\.\d+)?)"/.exec(b)?.[1] ?? null,
+    },
+    {
+        name: 'kraken',
+        // result.SOLEUR.c is [last trade price, lot volume].
+        url: 'https://api.kraken.com/0/public/Ticker?pair=SOLEUR',
+        extract: (b) => /"c"\s*:\s*\[\s*"(\d+(?:\.\d+)?)"/.exec(b)?.[1] ?? null,
+    },
+    {
+        name: 'coingecko',
+        url: 'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=eur',
+        extract: (b) => /"eur"\s*:\s*(\d+(?:\.\d+)?)/.exec(b)?.[1] ?? null,
+    },
+]
 
 /**
  * Used only when the oracle has never answered, this isolate has no memo, AND the database
@@ -32,7 +64,7 @@ const FALLBACK_EUR_PER_SOL = '200'
 export type SolRate = {
     /** EUR per SOL, scaled by 10^RATE_DECIMALS. */
     scaled: bigint
-    source: 'coingecko' | 'coingecko_cached' | 'coingecko_stale' | 'last_known' | 'static_fallback'
+    source: 'binance' | 'kraken' | 'coingecko' | 'cached' | 'stale' | 'last_known' | 'static_fallback'
     live: boolean
 }
 
@@ -65,16 +97,22 @@ const truncateFraction = (value: string, decimals: number): string => {
  * turns "123.456789" into a float. Exported so a check can pin it against real response
  * shapes without a network call.
  */
-export const parseEurRate = (body: string): bigint | null => {
-    const m = /"eur"\s*:\s*(\d+(?:\.\d+)?)/.exec(body)
-    if (!m) return null
+const toScaled = (value: string | null | undefined): bigint | null => {
+    if (!value) return null
     try {
-        const scaled = parseDecimal(truncateFraction(m[1], RATE_DECIMALS), RATE_DECIMALS)
+        const scaled = parseDecimal(truncateFraction(value, RATE_DECIMALS), RATE_DECIMALS)
         return scaled > 0n ? scaled : null
     } catch {
         return null
     }
 }
+
+export const parseEurRate = (body: string): bigint | null =>
+    toScaled(/"eur"\s*:\s*(\d+(?:\.\d+)?)/.exec(body)?.[1])
+
+/** Exported so a check can pin each source's shape without reaching the network. */
+export const extractRate = (source: string, body: string): bigint | null =>
+    toScaled(SOURCES.find((s) => s.name === source)?.extract(body) ?? null)
 
 /** The static rate, for the fallback path and for tests that need a fixed number. */
 export const fallbackRate = (): SolRate => ({
@@ -96,33 +134,37 @@ export const getSolEurRate = async (hint: RateHint = null): Promise<SolRate> => 
     // call that is rate-limited in practice. Measured: the free endpoint starts answering 429
     // after about four requests.
     if (hint && now - hint.at < TTL_MS) {
-        const rate: SolRate = { scaled: hint.scaled, source: 'coingecko_cached', live: true }
+        const rate: SolRate = { scaled: hint.scaled, source: 'cached', live: true }
         memo = { rate, at: hint.at }
         return rate
     }
 
-    try {
-        const res = await fetch(RATE_URL, { headers: { accept: 'application/json' } })
-        if (res.ok) {
-            const scaled = parseEurRate(await res.text())
-            if (scaled) {
-                const rate: SolRate = { scaled, source: 'coingecko', live: true }
-                memo = { rate, at: now }
-                return rate
+    for (const source of SOURCES) {
+        try {
+            const res = await fetch(source.url, { headers: { accept: 'application/json' } })
+            if (!res.ok) {
+                console.warn(`sol/eur rate: ${source.name} http ${res.status}`)
+                continue
             }
-            console.error('sol/eur rate: response had no usable eur figure')
-        } else {
-            console.error(`sol/eur rate: http ${res.status}`)
+            const scaled = toScaled(source.extract(await res.text()))
+            if (!scaled) {
+                console.warn(`sol/eur rate: ${source.name} had no usable figure`)
+                continue
+            }
+            const rate: SolRate = { scaled, source: source.name, live: true }
+            memo = { rate, at: now }
+            return rate
+        } catch (e) {
+            console.warn(`sol/eur rate: ${source.name} unreachable:`, e)
         }
-    } catch (e) {
-        console.error('sol/eur rate fetch failed:', e)
     }
+    console.error('sol/eur rate: every source failed')
 
     // Ordered by how close each is to the truth. A rate that was real an hour ago beats a
     // constant that was written months ago, and the constant is deliberately far above the
     // market so it never under-charges - which also means it over-charges badly, so it is
     // genuinely the last resort.
-    if (memo) return { ...memo.rate, source: 'coingecko_stale', live: false }
+    if (memo) return { ...memo.rate, source: 'stale', live: false }
     if (hint) return { scaled: hint.scaled, source: 'last_known', live: false }
     return fallbackRate()
 }
