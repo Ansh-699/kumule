@@ -19,7 +19,7 @@ import { publicKey } from '@metaplex-foundation/umi'
 import { base58 } from '@metaplex-foundation/umi/serializers'
 import { startLocalNeonProxy, resetDatabase, inspect, POSTGRES_URL } from './db-harness'
 import { getUmi } from './src/umi'
-import { runMintJob, deriveAssetSigner, readAssetState } from './src/mintjob'
+import { runMintJob, deriveAssetSigner, readAssetState, SUBREQUESTS_PER_JOB } from './src/mintjob'
 import { quoteMintFee, assetBytesFor, utf8Bytes } from './src/web3fees'
 import { verifyTransactionChecksum } from './src/audit'
 import { withPrisma } from './src/db'
@@ -72,7 +72,9 @@ const rpcCall = async (method: string, params: unknown[]) => {
 
 /** Serves the metadata the asset will point at, so resolveMetadata has something real. */
 const startMetadataHost = async () => {
+    let hits = 0
     const server: Server = createServer((req, res) => {
+        hits++
         if (req.url?.startsWith('/img.png')) {
             res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': '0' })
             res.end()
@@ -88,7 +90,42 @@ const startMetadataHost = async () => {
     })
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
     const port = (server.address() as any).port
-    return { url: `http://127.0.0.1:${port}`, stop: () => new Promise<void>((r) => server.close(() => r())) }
+    return {
+        url: `http://127.0.0.1:${port}`,
+        hits: () => hits,
+        stop: () => new Promise<void>((r) => server.close(() => r())),
+    }
+}
+
+/** Forwards every JSON-RPC call to the real cluster and counts them on the way through. */
+const startCountingRpcProxy = async (upstream: string) => {
+    let count = 0
+    const server: Server = createServer((req, res) => {
+        let body = ''
+        req.on('data', (c) => (body += c))
+        req.on('end', async () => {
+            count++
+            try {
+                const upstreamRes = await fetch(upstream, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body,
+                })
+                const text = await upstreamRes.text()
+                res.writeHead(upstreamRes.status, { 'Content-Type': 'application/json' })
+                res.end(text)
+            } catch (e) {
+                res.writeHead(502, { 'Content-Type': 'application/json' })
+                res.end(JSON.stringify({ error: String(e) }))
+            }
+        })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    return {
+        url: `http://127.0.0.1:${(server.address() as any).port}`,
+        count: () => count,
+        stop: () => new Promise<void>((r) => server.close(() => r())),
+    }
 }
 
 const b58 = (bytes: Uint8Array) => base58.deserialize(bytes)[0]
@@ -210,10 +247,32 @@ const run = async () => {
         console.log('')
         console.log('minting on devnet for real:')
 
+        // Counted at the network layer, not by wrapping globalThis.fetch. umi resolves its own
+        // fetch reference at import time and goes straight past a wrapper installed later, so
+        // that measurement silently reports about a third of the truth. Everything the job
+        // says to an RPC has to cross this proxy.
+        //
+        // SUBREQUESTS_PER_JOB gates how many jobs a sweep starts inside one invocation's
+        // budget. If the real number is higher, a sweep runs out of subrequests mid-mint.
+        const counting = await startCountingRpcProxy(RPC)
+        const countedEnv = { ...env, SOLANA_RPC_URL: counting.url }
         const started = Date.now()
-        const outcome = await runMintJob(env, POSTGRES_URL, jobId)
+        const outcome = await runMintJob(countedEnv, POSTGRES_URL, jobId)
+        const rpcCalls = counting.count()
+        await counting.stop()
+
+        // Five withPrisma calls, each opening its own connection - withPrisma builds a fresh
+        // client per call by design and there is no transaction to share.
+        const dbCalls = 5
+        const metadataCalls = host.hits()
+        const total = rpcCalls + dbCalls + metadataCalls
+        ok(`subrequests: ${rpcCalls} RPC + ${dbCalls} DB + ${metadataCalls} metadata = ${total}`)
         const elapsed = Date.now() - started
         eq('runMintJob outcome', outcome, 'minted')
+        eq(`the real cost is within the budgeted ${SUBREQUESTS_PER_JOB}`, total <= SUBREQUESTS_PER_JOB, true)
+        // The budget is only useful if it is close. Far too generous and the sweep does less
+        // work per tick than it safely could.
+        eq('and the budget is not wildly padded', total >= SUBREQUESTS_PER_JOB - 8, true)
         ok(`took ${(elapsed / 1000).toFixed(1)}s`)
 
         const job: any = await inspect((p: any) => p.mintJob.findUnique({ where: { id: jobId }, include: { nft: true } }))
