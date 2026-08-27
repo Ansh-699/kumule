@@ -600,8 +600,17 @@ export const scheduled = async (
         console.error('[CRON] database not configured; nothing to sweep')
         return
     }
-    const { processed, outcomes } = await sweepMintJobs(env, connectionString)
-    if (processed > 0) console.log('[CRON] swept mint jobs:', JSON.stringify(outcomes))
+    try {
+        const { processed, outcomes } = await sweepMintJobs(env, connectionString)
+        if (processed > 0) console.log('[CRON] swept mint jobs:', JSON.stringify(outcomes))
+    } catch (e) {
+        // Most likely cause by far: the code is deployed and the migration has not run, so
+        // mint_jobs does not exist yet. That is a deploy-ordering state, not an emergency, and
+        // it resolves itself the moment the migration lands - so it logs and returns rather
+        // than throwing out of a scheduled handler every five minutes.
+        console.error('[CRON] sweep failed (is the schema migrated?):', e)
+        return
+    }
 
     await pruneAbandonedQuotes(env, connectionString)
 }
