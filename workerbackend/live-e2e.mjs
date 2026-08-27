@@ -7,11 +7,23 @@
 // Cleans up the rows it creates so the marketplace is left as it was found.
 
 import { Keypair } from '@solana/web3.js'
-import { neon } from '@neondatabase/serverless'
+import { Pool, neonConfig } from '@neondatabase/serverless'
+import ws from 'ws'
 
 const B = 'https://kumele-backend.ansht.workers.dev'
 const RK = process.env.RK
-const sql = neon(process.env.PROD_DB)
+
+// Over the WebSocket transport, not neon()'s HTTP one. The HTTP endpoint resolves through a
+// different hostname that this environment's DNS intermittently fails to find, which killed
+// three otherwise-complete runs at the last step with an error about the database that had
+// nothing to do with the database.
+neonConfig.webSocketConstructor = ws
+const pool = new Pool({ connectionString: process.env.PROD_DB })
+const sql = async (strings, ...values) => {
+    const text = strings.reduce((acc, part, i) => acc + part + (i < values.length ? `$${i + 1}` : ''), '')
+    const { rows } = await pool.query(text, values)
+    return rows
+}
 
 let failures = 0
 const ok = (l) => console.log(`  ok   ${l}`)
@@ -150,3 +162,4 @@ ok(`   signature ${dbRow.tx_signature.slice(0, 24)}...`)
 console.log('')
 console.log(failures ? `${failures} FAILED` : 'LIVE END-TO-END: all passed')
 console.log(`__RESULT__ ${JSON.stringify({ paymentId, assetId, failures })}`)
+await pool.end()
