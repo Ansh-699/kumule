@@ -121,6 +121,23 @@ adapter handles it fine. Strip that parameter for CLI commands only.
 
 ## Deploy
 
+**Migrations first, then code.** The worker reads tables the previous deploy did not have, so
+shipping code ahead of schema gives every database-backed route a 500 for the length of the
+gap. `prisma migrate deploy` is additive here - three new tables and one new column with a
+default - so it is safe to run against a live database before the code that uses them exists.
+
+```
+DATABASE_URL=... npx prisma migrate deploy   # 1. schema
+npm run check                                # 2. gate
+npm run deploy                               # 3. code
+```
+
+After deploying, check the new tables are actually reachable rather than assuming: `/debug/db`
+reports row counts, but only for the tables it was written to know about, so confirm a quote
+round-trips with `curl "$WORKER/api/v1/web3/fees/quote?operation=nft_mint&chain=solana"`. A 503
+there means the migration did not land.
+
+
 ```txt
 npm run deploy
 npm run cf-typegen     # regenerate worker-configuration.d.ts after binding changes

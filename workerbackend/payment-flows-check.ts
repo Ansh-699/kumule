@@ -427,6 +427,48 @@ const run = async () => {
         eq('a second job for the same payment is refused by the database', blockedByDb, true)
 
         console.log('')
+        console.log('a payment whose intent id was never attached is still recoverable:')
+
+        // createIntent writes the row, calls Stripe, then attaches the intent id. That order
+        // is deliberate - it stops a charge existing with no row - but it leaves a window: if
+        // the attach fails, the row is unfindable by the only column the webhook searches, and
+        // the money sits against a payment nothing can advance. The id travels in the Stripe
+        // metadata anyway, so it is read back rather than left as decoration.
+        const oq = (await (await app.request('/quote?operation=nft_mint&chain=solana', {}, env)).json()) as any
+        const orphaned = (await (await post('/intent', {
+            quoteId: oq.quote_id, ownerAddress: OWNER, name: 'Orphan',
+            metadataUri: 'https://example.invalid/o.json',
+        })).json()) as any
+        const orphanPayment: any = await inspect((p: any) => p.payment.findUnique({ where: { id: orphaned.paymentId } }))
+        const orphanIntentId = orphanPayment.stripePaymentIntentId
+
+        // Simulate the attach having failed.
+        await withPrisma(POSTGRES_URL, (p: any) =>
+            p.payment.update({ where: { id: orphaned.paymentId }, data: { stripePaymentIntentId: null } })
+        )
+
+        await webhook({
+            type: 'payment_intent.succeeded', created: Math.floor(Date.now() / 1000),
+            data: { object: { id: orphanIntentId, metadata: { kumule_payment_id: orphaned.paymentId } } },
+        })
+        const recoveredOrphan: any = await inspect(async (p: any) => ({
+            payment: await p.payment.findUnique({ where: { id: orphaned.paymentId } }),
+            job: await p.mintJob.findFirst({ where: { paymentId: orphaned.paymentId } }),
+        }))
+        eq('the payment is found via its metadata', recoveredOrphan.payment.status, 'PAID')
+        eq('and the intent id is repaired', recoveredOrphan.payment.stripePaymentIntentId, orphanIntentId)
+        eq('so the mint proceeds', ['PENDING', 'MINTING', 'MINTED'].includes(recoveredOrphan.job.status), true)
+
+        // A metadata id pointing at somebody else's payment must not hijack it.
+        const hijack = await webhook({
+            type: 'payment_intent.succeeded', created: Math.floor(Date.now() / 1000),
+            data: { object: { id: 'pi_attacker', metadata: { kumule_payment_id: orphaned.paymentId } } },
+        })
+        eq('a metadata id for an already-attached payment is refused', hijack.status, 500)
+        const unchanged: any = await inspect((p: any) => p.payment.findUnique({ where: { id: orphaned.paymentId } }))
+        eq('and the payment keeps its own intent', unchanged.stripePaymentIntentId, orphanIntentId)
+
+        console.log('')
         console.log('an event for a payment we have no record of asks Stripe to retry:')
 
         // Ambiguous between "this raced the row being written" and "the row write failed after

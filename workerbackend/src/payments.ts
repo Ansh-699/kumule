@@ -397,11 +397,55 @@ export const stripeWebhook = async (c: Context<{ Bindings: CloudflareBindings }>
 
     try {
         if (type === 'payment_intent.succeeded') {
+            // Written into the PaymentIntent at checkout so the payment can be found even if
+            // the column that normally finds it was never written.
+            const metadataPaymentId: string | undefined = intent?.metadata?.kumule_payment_id
+
             const result = await withPrisma(connectionString, async (prisma) => {
-                const payment = await prisma.payment.findUnique({
+                let payment = await prisma.payment.findUnique({
                     where: { stripePaymentIntentId: intentId },
                     include: { mintJob: true },
                 })
+
+                // The recovery path for a window this design deliberately creates. createIntent
+                // writes the Payment row FIRST, then calls Stripe, then attaches the intent id -
+                // that ordering is what stops a charge existing with no row. But if the attach
+                // fails, the row exists and is unfindable by the only column the webhook looks
+                // at, and the customer's money sits against a payment nothing can advance.
+                //
+                // The id has been travelling in the Stripe metadata the whole time and was
+                // simply never read back. It is only ever used to FIND the row - every amount
+                // still comes from the database - so trusting it costs nothing.
+                if (!payment && metadataPaymentId) {
+                    payment = await prisma.payment.findUnique({
+                        where: { id: metadataPaymentId },
+                        include: { mintJob: true },
+                    })
+                    if (payment && !payment.stripePaymentIntentId) {
+                        // Repair it, so every later event finds it the normal way. Guarded, so
+                        // a metadata id pointing at someone else's already-attached payment
+                        // cannot hijack it.
+                        const { count } = await prisma.payment.updateMany({
+                            where: { id: payment.id, stripePaymentIntentId: null },
+                            data: { stripePaymentIntentId: intentId },
+                        })
+                        if (count > 0) {
+                            console.warn(
+                                `[WEBHOOK] recovered payment ${payment.id} via metadata; ` +
+                                'the intent id was never attached at checkout'
+                            )
+                        }
+                    } else if (payment && payment.stripePaymentIntentId !== intentId) {
+                        // Points at a payment belonging to a different intent. Not ours.
+                        logSecurityEvent('suspicious_activity', {
+                            actor: 'stripe_webhook',
+                            target: intentId,
+                            metadata: { reason: 'metadata payment id belongs to another intent' },
+                        })
+                        payment = null
+                    }
+                }
+
                 if (!payment) return { kind: 'missing' as const }
 
                 await prisma.payment.updateMany({
@@ -558,6 +602,44 @@ export const scheduled = async (
     }
     const { processed, outcomes } = await sweepMintJobs(env, connectionString)
     if (processed > 0) console.log('[CRON] swept mint jobs:', JSON.stringify(outcomes))
+
+    await pruneAbandonedQuotes(env, connectionString)
+}
+
+/**
+ * Delete quotes nobody spent.
+ *
+ * The quote endpoint is public and writes a row per call, so an abandoned checkout - or a
+ * crawler - leaves one behind forever. Nothing read them after they expired, so the table
+ * grew without bound for no benefit.
+ *
+ * Quotes attached to a payment are never touched: they are the record of what a customer was
+ * charged and why, and the whole reason the rate is stored on them. Only the ones that expired
+ * unused go, and only after a week, so there is a wide window in which to investigate a
+ * checkout that went wrong.
+ */
+const QUOTE_RETENTION_MS = 7 * 24 * 3_600_000
+
+export const pruneAbandonedQuotes = async (
+    _env: CloudflareBindings,
+    connectionString: string
+): Promise<number> => {
+    try {
+        const { count } = await withPrisma(connectionString, (prisma) =>
+            prisma.feeQuote.deleteMany({
+                where: {
+                    expiresAt: { lt: new Date(Date.now() - QUOTE_RETENTION_MS) },
+                    payment: null,
+                },
+            })
+        )
+        if (count > 0) console.log(`[CRON] pruned ${count} abandoned quote(s)`)
+        return count
+    } catch (e) {
+        // Housekeeping must never be the reason a sweep reports failure.
+        console.error('[CRON] quote prune failed:', e)
+        return 0
+    }
 }
 
 /** Whether the direct-crypto routes are live, for the frontend to read off /api/chains. */

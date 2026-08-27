@@ -312,13 +312,17 @@ export const CreatePage = () => {
 
             <div className="mt-6 space-y-5 rounded-2xl border border-white/[0.07] bg-[#0e1018] p-6">
                 <div>
-                    <label className="mb-2 block text-xs uppercase tracking-wider text-white/40">Chain</label>
-                    <div className="flex gap-2">
+                    {/* A group of buttons, not a form control, so htmlFor has nothing to point
+                        at. role=group + aria-labelledby is what actually names it to a screen
+                        reader, and aria-pressed is what tells one which is selected. */}
+                    <div id="chain-label" className="mb-2 block text-xs uppercase tracking-wider text-white/40">Chain</div>
+                    <div className="flex gap-2" role="group" aria-labelledby="chain-label">
                         {(['SOLANA', 'ETHEREUM'] as Chain[]).map((c) => (
                             <button
                                 key={c}
                                 onClick={() => { setChain(c); setState({ kind: 'idle' }) }}
                                 disabled={inCheckout}
+                                aria-pressed={chain === c}
                                 className={cn(
                                     'inline-flex flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors disabled:opacity-40',
                                     chain === c

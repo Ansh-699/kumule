@@ -52,8 +52,27 @@ export const mintPricing = (env: CloudflareBindings): MintPricing => ({
 export const taxOn = (baseMinor: number, bps: number): number =>
     bps <= 0 ? 0 : Number(ceilDiv(BigInt(baseMinor) * BigInt(bps), 10_000n))
 
-/** How many times a mint job may be attempted before it is refunded rather than retried. */
-export const MAX_MINT_ATTEMPTS = 5
+/**
+ * How many times a mint job may be attempted before it is refunded rather than retried.
+ *
+ * Raised from 5 because of what 5 actually bought. The sweep runs every five minutes with no
+ * backoff, so five attempts was a twenty-five minute total budget - shorter than an ordinary
+ * RPC provider incident. A devnet or Helius wobble lasting half an hour would have refunded
+ * every in-flight order automatically, which is a terrible way to handle a problem that fixes
+ * itself.
+ */
+export const MAX_MINT_ATTEMPTS = 8
+
+/**
+ * How long to wait before attempting a job again, given how many attempts it has had.
+ *
+ * Exponential and capped. Without it every failing job was retried at the full cron cadence,
+ * which turns one upstream outage into a tight retry loop across every open order and burns
+ * the attempt budget in minutes. With it, eight attempts span roughly four hours instead of
+ * twenty-five minutes, so an incident has time to end before anyone's money is handed back.
+ */
+export const retryDelayMs = (attempts: number): number =>
+    Math.min(2 ** Math.max(attempts, 0), 60) * 60_000
 
 /** How long a MINTING claim is honoured before a sweep may take the job back. */
 export const MINT_LEASE_MS = 5 * 60_000

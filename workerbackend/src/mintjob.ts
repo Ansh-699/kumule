@@ -35,7 +35,7 @@ import { resolveMetadata } from './metadata'
 import { withPrisma, ensureUser } from './db'
 import { auditedTransactionData } from './audit'
 import { lamportsToEurMinor } from './fx'
-import { MAX_MINT_ATTEMPTS, MINT_LEASE_MS } from './config'
+import { MAX_MINT_ATTEMPTS, MINT_LEASE_MS, retryDelayMs } from './config'
 import { createRefund } from './stripe'
 import { COMPUTE_UNITS, PRIORITY_MICRO_LAMPORTS } from './web3fees'
 
@@ -642,16 +642,31 @@ export const sweepMintJobs = async (
     const started = Date.now()
 
     const leaseCutoff = new Date(Date.now() - MINT_LEASE_MS)
-    const due = await withPrisma(connectionString, (prisma) =>
+
+    // Over-fetch, then apply the backoff in memory. A per-row interval comparison is not
+    // something Prisma can express in a where clause without dropping to raw SQL, and the
+    // candidate set here is small. Fetching only `maxJobs` would let a few backed-off jobs
+    // fill the batch and starve everything behind them.
+    const candidates = await withPrisma(connectionString, (prisma) =>
         prisma.mintJob.findMany({
             where: {
                 OR: [{ status: 'PENDING' }, { status: 'MINTING', lockedAt: { lt: leaseCutoff } }],
             },
             orderBy: { createdAt: 'asc' },
-            take: maxJobs,
-            select: { id: true },
+            take: Math.max(maxJobs * 10, 20),
+            select: { id: true, attempts: true, updatedAt: true },
         })
     )
+
+    const now = Date.now()
+    const due = candidates
+        // A job that has never been tried runs immediately; one that just failed waits.
+        .filter((j) => j.attempts === 0 || now - j.updatedAt.getTime() >= retryDelayMs(j.attempts))
+        .slice(0, maxJobs)
+
+    if (candidates.length > due.length) {
+        console.log(`[SWEEP] ${candidates.length - due.length} job(s) still in backoff`)
+    }
 
     const outcomes: Record<string, number> = {}
     let processed = 0
