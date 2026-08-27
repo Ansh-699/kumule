@@ -210,6 +210,11 @@ export const CreatePage = () => {
         queryFn: () => api.chains(),
         staleTime: 5 * 60_000,
     })
+    // Three states, not two. `?? false` folded "we have not heard back yet" into "both rails
+    // are switched off", so a single failed /api/chains call disabled minting AND told the
+    // user it was paused on purpose - a deliberate-sounding message for a network blip, with
+    // no retry and nothing to click.
+    const featuresKnown = chainInfo != null
     const stripeLive = chainInfo?.features?.stripePayments ?? false
     const walletMintLive = chainInfo?.features?.directCrypto ?? false
 
@@ -218,7 +223,7 @@ export const CreatePage = () => {
     // Card is the intended path for Solana, but only where it can actually work. Where it
     // cannot and the wallet route is still open, mint the old way rather than dead-end.
     const payByCard = chain === 'SOLANA' && stripeLive
-    const solanaUnavailable = chain === 'SOLANA' && !stripeLive && !walletMintLive
+    const solanaUnavailable = featuresKnown && chain === 'SOLANA' && !stripeLive && !walletMintLive
 
     const pickFile = (f: File | null) => {
         setFile(f)
@@ -314,6 +319,18 @@ export const CreatePage = () => {
         }
     }
 
+    // Resolved, not held as a promise. `stripePromise && ...` was the guard, and a Promise is
+    // truthy whatever it settles to - so when js.stripe.com is blocked and the promise
+    // resolves to null, the "card payments unavailable" branch never ran. <Elements> mounted
+    // with a null stripe, its context stayed empty, and checkout hung on a permanently
+    // disabled button with no message, after the PaymentIntent already existed.
+    const [stripe, setStripe] = useState<Awaited<typeof stripePromise> | undefined>(undefined)
+    useEffect(() => {
+        let live = true
+        stripePromise?.then((s) => live && setStripe(s))
+        return () => { live = false }
+    }, [])
+
     const elementsOptions = useMemo(
         () =>
             state.kind === 'checkout'
@@ -345,7 +362,7 @@ export const CreatePage = () => {
                     {/* A group of buttons, not a form control, so htmlFor has nothing to point
                         at. role=group + aria-labelledby is what actually names it to a screen
                         reader, and aria-pressed is what tells one which is selected. */}
-                    <div id="chain-label" className="mb-2 block text-xs uppercase tracking-wider text-white/40">Chain</div>
+                    <div id="chain-label" className="mb-2 block text-xs uppercase tracking-wider text-white/60">Chain</div>
                     <div className="flex gap-2" role="group" aria-labelledby="chain-label">
                         {(['SOLANA', 'ETHEREUM'] as Chain[]).map((c) => (
                             <button
@@ -367,7 +384,7 @@ export const CreatePage = () => {
                     </div>
                     {/* Two payment models in one form; saying which is which up front beats
                         letting someone find out at the payment step. */}
-                    <p className="mt-2 text-[11px] text-white/35">
+                    <p className="mt-2 text-[11px] text-white/55">
                         {payByCard
                             ? 'Solana mints are paid for by card.'
                             : solanaUnavailable
@@ -377,7 +394,7 @@ export const CreatePage = () => {
                 </div>
 
                 <div>
-                    <label htmlFor="nft-image" className="mb-2 block text-xs uppercase tracking-wider text-white/40">Image</label>
+                    <label htmlFor="nft-image" className="mb-2 block text-xs uppercase tracking-wider text-white/60">Image</label>
                     <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-8 text-center hover:border-white/30">
                         {preview ? (
                             <img src={preview} alt="" className="h-40 w-40 rounded-lg object-cover" />
@@ -399,7 +416,7 @@ export const CreatePage = () => {
                 </div>
 
                 <div>
-                    <label htmlFor="nft-name" className="mb-2 block text-xs uppercase tracking-wider text-white/40">Name</label>
+                    <label htmlFor="nft-name" className="mb-2 block text-xs uppercase tracking-wider text-white/60">Name</label>
                     <input
                         id="nft-name"
                         value={name}
@@ -411,7 +428,7 @@ export const CreatePage = () => {
                 </div>
 
                 <div>
-                    <label htmlFor="nft-description" className="mb-2 block text-xs uppercase tracking-wider text-white/40">Description</label>
+                    <label htmlFor="nft-description" className="mb-2 block text-xs uppercase tracking-wider text-white/60">Description</label>
                     <textarea
                         id="nft-description"
                         value={description}
@@ -423,7 +440,7 @@ export const CreatePage = () => {
                 </div>
 
                 <div>
-                    <label htmlFor="nft-category" className="mb-2 block text-xs uppercase tracking-wider text-white/40">Category</label>
+                    <label htmlFor="nft-category" className="mb-2 block text-xs uppercase tracking-wider text-white/60">Category</label>
                     <select
                         id="nft-category"
                         value={category}
@@ -449,7 +466,7 @@ export const CreatePage = () => {
                         <span>
                             {state.message}
                             {state.paymentId && (
-                                <span className="mt-1 block text-[11px] text-white/45">
+                                <span className="mt-1 block text-[11px] text-white/60">
                                     Payment reference{' '}
                                     <code className="font-mono text-white/70">{state.paymentId}</code>. Your
                                     payment is safe and the mint is still being retried — quote this
@@ -480,12 +497,12 @@ export const CreatePage = () => {
                             feeLabel={state.feeLabel}
                             feeNote={state.feeNote}
                         />
-                        <p className="text-[11px] leading-relaxed text-white/35">
+                        <p className="text-[11px] leading-relaxed text-white/55">
                             The NFT is minted to {address?.slice(0, 6)}…{address?.slice(-4)} after your
                             payment clears. You do not need to sign anything.
                         </p>
-                        {stripePromise && elementsOptions ? (
-                            <Elements stripe={stripePromise} options={elementsOptions}>
+                        {stripe && elementsOptions ? (
+                            <Elements stripe={stripe} options={elementsOptions}>
                                 <CheckoutForm
                                     paymentId={state.paymentId}
                                     onMinted={(assetId, signature) =>

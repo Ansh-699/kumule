@@ -140,7 +140,10 @@ app.get('/api/chains', (c) =>
     })
 )
 
-app.get('/debug/db', async (c) => {
+// Behind the admin key. It leaks no secret and no row content, but it is an unauthenticated
+// read of live business metrics - user count, sales, inventory - and /api/admin/overview
+// already gives an authenticated operator a superset of it.
+app.get('/debug/db', adminAuth, async (c) => {
     const connectionString = getConnectionString(c.env)
     if (!connectionString) return c.json({ ok: false, error: 'Database not configured' }, 503)
     try {

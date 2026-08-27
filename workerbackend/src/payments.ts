@@ -235,6 +235,23 @@ export const createIntent = async (c: Context<{ Bindings: CloudflareBindings }>)
             },
         })
     } catch (e: any) {
+        // Payment.quoteId is unique, so a second checkout against the same quote - a
+        // double-click, a retried request - threw P2002 out of prisma.payment.create and
+        // landed here as a 500 quoting the constraint and the column name. That is an
+        // undocumented status for an ordinary user action, and it leaks schema while doing it.
+        if (e?.code === 'P2002') {
+            const existing = await withPrisma(connectionString, (prisma) =>
+                prisma.payment.findUnique({ where: { quoteId }, select: { id: true } })
+            ).catch(() => null)
+            return c.json(
+                {
+                    error: 'This quote has already been used to start a payment.',
+                    code: 'quote_already_used',
+                    paymentId: existing?.id ?? null,
+                },
+                409
+            )
+        }
         console.error('createIntent failed:', e)
         return c.json({ error: 'Could not start the payment', details: e?.message }, 500)
     }

@@ -294,7 +294,11 @@ export const listListings = async (c: Context<{ Bindings: CloudflareBindings }>)
 
     const { limit, offset } = parsePaging(c)
     const chain = parseChain(c.req.query('chain'))
-    const where: Prisma.ListingWhereInput = { status: 'ACTIVE' }
+    // Hidden is the kill switch the admin dashboard and the metadata resolver use to pull a
+    // broken or abusive NFT out of circulation, and /api/nfts honours it. This endpoint did
+    // not, so a hidden asset stayed listed and buyable through the listings feed - the one
+    // place the switch most needed to reach.
+    const where: Prisma.ListingWhereInput = { status: 'ACTIVE', nft: { hidden: false } }
     if (chain) where.chain = chain
 
     try {

@@ -34,10 +34,10 @@ export const PriceBreakdown = ({
             <dl className="space-y-2.5">
                 {rows.map((row) => (
                     <div key={row.label} className="flex items-baseline justify-between gap-4">
-                        <dt className="text-sm text-white/55">
+                        <dt className="text-sm text-white/70">
                             {row.label}
                             {row.note && (
-                                <span className="mt-0.5 block text-[11px] leading-snug text-white/35">
+                                <span className="mt-0.5 block text-[11px] leading-snug text-white/55">
                                     {row.note}
                                 </span>
                             )}

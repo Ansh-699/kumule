@@ -87,9 +87,16 @@ export const searchNftByAsset = async (c: Context<{ Bindings: CloudflareBindings
             return c.json({ error: 'Request timeout' }, 408)
         }
         
-        return c.json({ 
-            error: 'Error fetching asset',
-            message: error.message 
-        }, 500)
+        // The provider's own error body is not forwarded. It names which RPC is refusing us -
+        // a free health oracle for anyone who asks - and a keyed provider's failure messages
+        // can quote the request back. The console line above keeps the detail for operators.
+        //
+        // An address with nothing at it is the caller's mistake, not ours, so it is a 404.
+        const missing = /could not find|account does not exist|Expected a value of type|deserialize/i
+            .test(error?.message ?? '')
+        return c.json(
+            { error: missing ? 'Asset not found' : 'Could not read the asset from chain' },
+            missing ? 404 : 502
+        )
     }
 }

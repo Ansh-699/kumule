@@ -385,9 +385,10 @@ export const generateTrackMetadata = async (c: Context<{ Bindings: CloudflareBin
                 include: { album: true }
             })
 
-            if (!track) {
-                throw new Error('Track not found')
-            }
+            // Returned rather than thrown. Throwing from inside withPrisma lands in the
+            // catch below, which maps everything to 500 - so the most ordinary outcome of
+            // this route, an id that does not exist, answered as a server fault.
+            if (!track) return null
 
             // Generate Metaplex-compatible metadata
             const metadata = {
@@ -428,9 +429,10 @@ export const generateTrackMetadata = async (c: Context<{ Bindings: CloudflareBin
             return metadata
         })
 
+        if (!result) return c.json({ error: 'Track not found' }, 404)
         return c.json({ metadata: result })
     } catch (error: any) {
         console.error('Generate track metadata error:', error)
-        return c.json({ error: error.message || 'Failed to generate metadata' }, 500)
+        return c.json({ error: 'Failed to generate metadata' }, 500)
     }
 }

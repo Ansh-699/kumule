@@ -169,16 +169,25 @@ export const uploadFilesToR2 = async (c: Context<{ Bindings: CloudflareBindings 
 export const uploadMetadataToR2 = async (c: Context<{ Bindings: CloudflareBindings }>) => {
     try {
         const body = await c.req.json()
-        const { metadata, filename } = body
+        const { metadata } = body
 
         if (!metadata) {
             return c.json({ error: 'Metadata required' }, 400)
         }
 
-        // Generate filename if not provided
+        // Always generated, never taken from the caller.
+        //
+        // This used to be `filename || generated`, and the key went straight into
+        // NFT_IMAGES.put(). The route is unauthenticated because the mint flow needs it, so
+        // anyone could name an existing object and overwrite it - and an NFT's metadata URI
+        // is written on chain and immutable, so whatever sits at that key IS the token as far
+        // as every wallet and marketplace is concerned. Replacing the bytes replaces the
+        // artwork, permanently, for everyone, with nothing on chain changing to show it.
+        //
+        // Nothing was passing a filename: the only caller sends { metadata } alone.
         const timestamp = Date.now()
         const randomId = Math.random().toString(36).substring(2, 15)
-        const metadataFilename = filename || `metadata/${timestamp}-${randomId}.json`
+        const metadataFilename = `metadata/${timestamp}-${randomId}.json`
 
         // Upload JSON to R2
         const jsonString = JSON.stringify(metadata, null, 2)

@@ -29,7 +29,7 @@ import { createV1 } from '@metaplex-foundation/mpl-core'
 import { getAssetV1AccountDataSerializer } from '@metaplex-foundation/mpl-core/dist/src/generated/types/assetV1AccountData'
 import { base58 } from '@metaplex-foundation/umi/serializers'
 import { getUmi, withPriorityFees } from './umi'
-import { solanaRpc, makeAssetId, fromBaseUnits } from './chains'
+import { solanaRpc, solanaRpcChain, makeAssetId, fromBaseUnits } from './chains'
 import { verifySolanaTransaction, readFeePayerCost, rpc } from './solana'
 import { resolveMetadata } from './metadata'
 import { withPrisma, ensureUser } from './db'
@@ -58,11 +58,11 @@ export const CURRENT_SEED_VERSION = 1
  * Deliberately not shared with medals.ts's vaultSigner - that one names its own env var in
  * its own error message, and parameterising it would couple two unrelated failure modes.
  */
-export const platformSigner = (env: CloudflareBindings) => {
+export const platformSigner = (env: CloudflareBindings, rpcUrl?: string) => {
     const secret = env.MINT_VAULT_PRIVATE_KEY || env.MEDAL_VAULT_PRIVATE_KEY
     if (!secret) return null
     try {
-        const umi = getUmi(solanaRpc(env))
+        const umi = getUmi(rpcUrl ?? solanaRpc(env))
         const kp = umi.eddsa.createKeypairFromSecretKey(base58.serialize(secret))
         return { umi: umi.use(keypairIdentity(kp)), address: kp.publicKey.toString() }
     } catch (e) {
@@ -229,8 +229,9 @@ export const runMintJob = async (
         console.error('MINT_ASSET_SEED is not configured; refusing to mint')
         return 'unconfigured'
     }
-    const vault = platformSigner(env)
-    if (!vault) {
+    // Cheap check before claiming anything. The signer itself is built after the claim,
+    // because which endpoint it should use depends on how many attempts this job has had.
+    if (!platformSigner(env)) {
         console.error('No mint vault key configured; refusing to mint')
         return 'unconfigured'
     }
@@ -256,6 +257,28 @@ export const runMintJob = async (
     })
 
     if (!claimed) return 'not-claimed'
+
+    // Which endpoint this attempt uses is a function of the attempt number, so successive
+    // retries land on different providers instead of hammering one that is refusing us.
+    //
+    // The read path already falls through a chain, but the mint goes through umi, which binds
+    // to a single URL at construction - so a rate-limited provider stalled the one operation
+    // that matters while ordinary reads carried on fine. Rotating per attempt buys the same
+    // resilience without restructuring the mint around a multi-endpoint client.
+    //
+    // Every keyless devnet endpoint rate-limits, so this makes that survivable rather than
+    // solved. A dedicated provider key is still the real answer.
+    const endpoints = solanaRpcChain(env)
+    const rpcUrl = endpoints[Math.max(claimed.attempts - 1, 0) % endpoints.length]
+    const vault = platformSigner(env, rpcUrl)
+    if (!vault) return 'unconfigured'
+    if (endpoints.length > 1) {
+        console.log(`[MINTJOB ${jobId}] attempt ${claimed.attempts} via ${new URL(rpcUrl).host}`)
+    }
+
+    // Reads inside this attempt should use the same endpoint the mint is talking to, so a
+    // confirm poll cannot report "not landed" from a node that never saw the send.
+    const attemptEnv = { ...env, SOLANA_RPC_URL: rpcUrl } as CloudflareBindings
 
     // The attempt cap is NOT decided here. It used to be, and that was a way to give a buyer
     // their money back for an NFT they had already received: the retry path exists precisely
@@ -378,7 +401,7 @@ export const runMintJob = async (
                 })
             )
 
-            const sent = await sendWithBoundedConfirm(env, umi, signed)
+            const sent = await sendWithBoundedConfirm(attemptEnv, umi, signed)
             signature = sent.signature
 
             if (!sent.confirmed) {
@@ -402,7 +425,7 @@ export const runMintJob = async (
         let owner: string | null = null
         let ownershipSource: string | null = null
 
-        const indexed = await verifyOwnershipViaDas(env, derived)
+        const indexed = await verifyOwnershipViaDas(attemptEnv, derived)
         if (indexed) {
             owner = indexed
             ownershipSource = 'das'
@@ -426,7 +449,7 @@ export const runMintJob = async (
         // means "cost to the platform".
         let actualFeeLamports: bigint | null = null
         if (signature) {
-            const cost = await readFeePayerCost(env, signature, vault.address)
+            const cost = await readFeePayerCost(attemptEnv, signature, vault.address)
             actualFeeLamports = cost?.lamports ?? null
         }
 
@@ -447,7 +470,7 @@ export const runMintJob = async (
 
         // Outside the connection: holding a pooled Neon socket open across a remote fetch is
         // how a slow metadata host becomes a database problem. resolveMetadata never throws.
-        const meta = await resolveMetadata(env, claimed.metadataUri)
+        const meta = await resolveMetadata(attemptEnv, claimed.metadataUri)
 
         const assetId = makeAssetId('SOLANA', { mintAddress: derived })
 
