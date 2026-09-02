@@ -72,6 +72,11 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum PaymentOrigin {
+  DIRECT      // this worker's own quote -> intent -> Stripe -> webhook flow
+  KUMELE_API  // Kumele's backend already collected payment; called POST /api/v1/mint
+}
+
 // BLOCKED is not a failure we retry. It means the derived asset address already holds an
 // account that is not our Core asset - someone dusted it, or a seed rotation moved the
 // derivation - so minting there can never succeed and a human has to decide.
@@ -473,6 +478,10 @@ model Payment {
   // charge exists is an orphaned payment nothing can find.
   stripePaymentIntentId String?       @unique @map("stripe_payment_intent_id")
   status                PaymentStatus @default(REQUIRES_PAYMENT)
+  origin                PaymentOrigin @default(DIRECT) @map("origin")
+  // Kumele's own order id. Null for DIRECT rows. Unique so a duplicate /api/v1/mint call
+  // for the same order can be recognised the same way a duplicate stripePaymentIntentId is.
+  orderId               String?       @unique @map("order_id")
   currency              String        @default("eur")
   baseAmountMinor       Int           @map("base_amount_minor")
   taxAmountMinor        Int           @map("tax_amount_minor")
@@ -532,6 +541,13 @@ model MintJob {
   lockedAt          DateTime? @map("locked_at")
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  // Set once the Kumele callback for this job's terminal state has been acknowledged
+  // (2xx). Null means "not sent yet" or "still retrying" - the callback sweep reads
+  // exactly this column to decide what's left to do.
+  callbackSentAt    DateTime? @map("callback_sent_at")
+  callbackAttempts  Int       @default(0) @map("callback_attempts")
+  callbackLastError String?   @map("callback_last_error")
 
   payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
   nft     Nft?    @relation(fields: [nftId], references: [id])
