@@ -65,7 +65,7 @@ import {
     createIntent, getPayment, stripeWebhook, scheduled, featureFlags,
     adminListPayments, adminRefundPayment,
 } from './payments'
-import { mintFromKumele } from './kumeleMint'
+import { mintFromKumele, sendMintCallbacks } from './kumeleMint'
 import { directCryptoEnabled } from './config'
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()
@@ -349,9 +349,29 @@ app.get('/api/admin/audit/:identifier', adminAuth, async (c) => {
 // on the Hono instance itself.
 export { app }
 
+// Composed here, not inside payments.ts's own scheduled: kumeleMint.ts already imports
+// kickOff/VAULT_SAFETY_FACTOR from payments.ts, so payments.ts importing sendMintCallbacks
+// back would be a cycle. index.ts already depends on both and nothing depends on index.ts,
+// so it's the natural place to combine them.
+const runScheduled = async (
+    controller: ScheduledController,
+    env: CloudflareBindings,
+    ctx: ExecutionContext
+): Promise<void> => {
+    await scheduled(controller, env, ctx)
+    const connectionString = getConnectionString(env)
+    if (connectionString) {
+        await sendMintCallbacks(env, connectionString).catch((e) =>
+            console.error('[CRON] sendMintCallbacks failed:', e)
+        )
+    }
+}
+
 export default {
     fetch: app.fetch,
-    // Sweeps mint jobs that the webhook's waitUntil did not finish, and refunds the ones that
-    // never can. This is the guarantee; the inline kick is only the fast path.
-    scheduled,
+    // Sweeps mint jobs that the webhook's waitUntil did not finish, refunds the ones that
+    // never can, and sends the Kumele mint-outcome callback for any terminal KUMELE_API job
+    // that hasn't been acknowledged yet. This is the guarantee; the inline kicks in
+    // payments.ts and kumeleMint.ts are only the fast paths.
+    scheduled: runScheduled,
 } satisfies ExportedHandler<CloudflareBindings>

@@ -12,6 +12,7 @@ import { quoteMintFee, assetBytesFor, utf8Bytes, MAX_NAME_BYTES, MAX_URI_BYTES }
 import { platformSigner, runMintJob } from './mintjob'
 import { hmacSha256Hex, timingSafeEqual } from './stripe'
 import { kickOff, VAULT_SAFETY_FACTOR } from './payments'
+import { MAX_CALLBACK_ATTEMPTS } from './config'
 
 // --- auth --------------------------------------------------------------------------------
 
@@ -271,4 +272,123 @@ export const mintFromKumele = async (c: Context<{ Bindings: CloudflareBindings }
         console.error('[KUMELE-MINT] failed:', e)
         return c.json({ error: 'Could not queue the mint', details: e?.message }, 500)
     }
+}
+
+// --- outbound callback ---------------------------------------------------------------------
+
+type CallbackPayment = { stripePaymentIntentId: string | null; orderId: string | null }
+type CallbackJob = {
+    status: string
+    mintAddress: string | null
+    txSignature: string | null
+    ownerAddress: string
+    updatedAt: Date
+    lastError: string | null
+}
+
+/** Pure, so the shape sent to Kumele is pinned without a network call. */
+export const buildCallbackPayload = (payment: CallbackPayment, job: CallbackJob) => ({
+    payment_intent_id: payment.stripePaymentIntentId,
+    order_id: payment.orderId,
+    status: job.status === 'MINTED' ? 'minted' : 'mint_failed',
+    mint_address: job.mintAddress,
+    tx_signature: job.txSignature,
+    recipient_wallet: job.ownerAddress,
+    chain: 'solana',
+    occurred_at: job.updatedAt.toISOString(),
+    failure_reason: job.status === 'MINTED' ? null : job.lastError,
+})
+
+/** Same construction this worker verifies incoming requests with, used the other direction. */
+export const signCallback = async (
+    rawBody: string,
+    secret: string,
+    timestamp: number = Math.floor(Date.now() / 1000)
+): Promise<{ header: string; timestamp: number }> => ({
+    header: `sha256=${await hmacSha256Hex(secret, `${timestamp}.${rawBody}`)}`,
+    timestamp,
+})
+
+/**
+ * Cron-driven, not a side effect of the mint itself - minting takes longer than one HTTP
+ * round trip, and this follows the same shape as backfillMintCosts (mintjob.ts:664): a
+ * sweep that finds rows in a known state and advances them, independent of which code path
+ * put them there.
+ */
+export const sendMintCallbacks = async (
+    env: CloudflareBindings,
+    connectionString: string,
+    maxJobs = 5
+): Promise<{ sent: number; failed: number }> => {
+    const secret = env.KUMELE_MINT_API_SECRET
+    const url = env.KUMELE_CALLBACK_URL
+    if (!secret || !url) {
+        console.log('[KUMELE-CALLBACK] not configured; skipping')
+        return { sent: 0, failed: 0 }
+    }
+
+    const due = await withPrisma(connectionString, (prisma) =>
+        prisma.mintJob.findMany({
+            where: {
+                callbackSentAt: null,
+                callbackAttempts: { lt: MAX_CALLBACK_ATTEMPTS },
+                status: { in: ['MINTED', 'BLOCKED', 'FAILED', 'REFUNDED'] },
+                payment: { origin: 'KUMELE_API' },
+            },
+            include: { payment: true },
+            take: maxJobs,
+            orderBy: { updatedAt: 'asc' },
+        })
+    )
+
+    let sent = 0
+    let failed = 0
+
+    for (const job of due) {
+        const payload = buildCallbackPayload(job.payment, job)
+        const rawBody = JSON.stringify(payload)
+        const { header, timestamp } = await signCallback(rawBody, secret)
+
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Kumele-Signature': header,
+                    'X-Kumele-Timestamp': String(timestamp),
+                },
+                body: rawBody,
+            })
+
+            if (res.ok) {
+                await withPrisma(connectionString, (prisma) =>
+                    prisma.mintJob.update({ where: { id: job.id }, data: { callbackSentAt: new Date() } })
+                )
+                sent++
+            } else {
+                const reason = `HTTP ${res.status}`
+                await withPrisma(connectionString, (prisma) =>
+                    prisma.mintJob.update({
+                        where: { id: job.id },
+                        data: { callbackAttempts: { increment: 1 }, callbackLastError: reason },
+                    })
+                )
+                failed++
+                if (job.callbackAttempts + 1 >= MAX_CALLBACK_ATTEMPTS) {
+                    console.error(`[KUMELE-CALLBACK] giving up on job ${job.id} after ${MAX_CALLBACK_ATTEMPTS} attempts: ${reason}`)
+                }
+            }
+        } catch (e: any) {
+            const reason = e?.message ?? String(e)
+            await withPrisma(connectionString, (prisma) =>
+                prisma.mintJob.update({
+                    where: { id: job.id },
+                    data: { callbackAttempts: { increment: 1 }, callbackLastError: reason.slice(0, 500) },
+                })
+            )
+            failed++
+        }
+    }
+
+    return { sent, failed }
 }

@@ -9,6 +9,8 @@ import {
     verifyMintApiSignature,
     validateMintRequest,
     mintApiResponseFor,
+    buildCallbackPayload,
+    signCallback,
 } from './src/kumeleMint'
 
 let failures = 0
@@ -115,6 +117,49 @@ async function run() {
         mintApiResponseFor({ status: 'BLOCKED', lastError: 'squatted address' } as any),
         { httpStatus: 200, body: { status: 'mint_failed', reason: 'squatted address' } }
     )
+
+    // --- buildCallbackPayload / signCallback -----------------------------------------
+    const mintedPayment = {
+        stripePaymentIntentId: 'pi_1', orderId: 'ord_1',
+    }
+    const mintedJob = {
+        status: 'MINTED', mintAddress: 'ADDR', txSignature: 'SIG',
+        ownerAddress: RECIPIENT, updatedAt: new Date('2026-09-02T12:00:00Z'), lastError: null,
+    }
+    const mintedPayload = buildCallbackPayload(mintedPayment as any, mintedJob as any)
+    eq('minted callback payload shape', mintedPayload, {
+        payment_intent_id: 'pi_1',
+        order_id: 'ord_1',
+        status: 'minted',
+        mint_address: 'ADDR',
+        tx_signature: 'SIG',
+        recipient_wallet: RECIPIENT,
+        chain: 'solana',
+        occurred_at: '2026-09-02T12:00:00.000Z',
+        failure_reason: null,
+    })
+
+    const failedJob = {
+        status: 'BLOCKED', mintAddress: null, txSignature: null,
+        ownerAddress: RECIPIENT, updatedAt: new Date('2026-09-02T12:00:00Z'), lastError: 'squatted address',
+    }
+    const failedPayload = buildCallbackPayload(mintedPayment as any, failedJob as any)
+    eq('mint_failed callback payload shape', failedPayload, {
+        payment_intent_id: 'pi_1',
+        order_id: 'ord_1',
+        status: 'mint_failed',
+        mint_address: null,
+        tx_signature: null,
+        recipient_wallet: RECIPIENT,
+        chain: 'solana',
+        occurred_at: '2026-09-02T12:00:00.000Z',
+        failure_reason: 'squatted address',
+    })
+
+    const rawPayload = JSON.stringify(mintedPayload)
+    const { header, timestamp } = await signCallback(rawPayload, SECRET)
+    const verified = await verifyMintApiSignature(rawPayload, header, String(timestamp), SECRET)
+    eq('a callback this worker signs verifies against the same secret', verified.ok, true)
 
     console.log(failures === 0 ? '\nall passed' : `\n${failures} FAILED`)
     process.exit(failures === 0 ? 0 : 1)

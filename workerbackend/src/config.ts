@@ -64,6 +64,14 @@ export const taxOn = (baseMinor: number, bps: number): number =>
 export const MAX_MINT_ATTEMPTS = 8
 
 /**
+ * How many times the Kumele callback is retried before giving up and logging for manual
+ * reconciliation. The sweep runs every five minutes, so 10 spans roughly 50 minutes - long
+ * enough to ride out a brief outage on Kumele's side without silently losing the fact that
+ * a mint succeeded or failed.
+ */
+export const MAX_CALLBACK_ATTEMPTS = 10
+
+/**
  * How long to wait before attempting a job again, given how many attempts it has had.
  *
  * Exponential and capped. Without it every failing job was retried at the full cron cadence,
