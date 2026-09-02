@@ -40,7 +40,7 @@ export const formEncode = (data: Record<string, unknown>): string => {
 
 // --- signature verification -------------------------------------------------------------
 
-const hmacSha256Hex = async (secret: string, payload: string): Promise<string> => {
+export const hmacSha256Hex = async (secret: string, payload: string): Promise<string> => {
     const enc = new TextEncoder()
     const key = await crypto.subtle.importKey(
         'raw',
@@ -54,7 +54,7 @@ const hmacSha256Hex = async (secret: string, payload: string): Promise<string> =
 }
 
 /** Constant-time compare, same shape as timingSafeEqual in admin.ts. */
-const timingSafeEqual = (a: string, b: string): boolean => {
+export const timingSafeEqual = (a: string, b: string): boolean => {
     if (a.length !== b.length) return false
     let diff = 0
     for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)

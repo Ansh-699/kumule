@@ -23,7 +23,7 @@ import { logSecurityEvent } from './audit'
  * the check costs one RPC call. Three times over, so a vault that is about to run dry stops
  * selling before it does rather than after.
  */
-const VAULT_SAFETY_FACTOR = 3n
+export const VAULT_SAFETY_FACTOR = 3n
 
 // --- POST /api/v1/payments/intent -------------------------------------------------------
 
@@ -324,7 +324,7 @@ export const getPayment = async (c: Context<{ Bindings: CloudflareBindings }>) =
  * event that was in fact handled. It also makes the route impossible to exercise from a
  * check, since app.request(path, init, env) passes no context.
  */
-const kickOff = (c: Context<{ Bindings: CloudflareBindings }>, work: Promise<unknown>): void => {
+export const kickOff = (c: Context<{ Bindings: CloudflareBindings }>, work: Promise<unknown>): void => {
     const swallow = (e: unknown) => console.error('[WEBHOOK] background work failed:', e)
     try {
         c.executionCtx.waitUntil(work.catch(swallow))
