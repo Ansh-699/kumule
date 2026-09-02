@@ -69,6 +69,21 @@ ADMIN_API_KEY="generate-a-long-random-value"
 # value to guess at.
 # STRIPE_API_VERSION="2025-01-27.acacia"
 
+# --- kumele integration --------------------------------------------------------
+
+# Shared secret for POST /api/v1/mint. Kumele's backend signs its request with this;
+# this worker verifies with the same key, same HMAC-SHA256-over-timestamp.body
+# construction as the Stripe webhook check above. /api/v1/mint 503s without it.
+#
+# Exchanged with Kumele out of band - never in a commit, a chat log, or this file
+# beyond this placeholder.
+# KUMELE_MINT_API_SECRET="generate-a-long-random-value"
+
+# Where the signed mint-outcome callback is POSTed once a job reaches a terminal
+# state. The cron sweep logs and skips callback delivery, rather than failing the
+# whole sweep, when this is unset.
+# KUMELE_CALLBACK_URL="https://api.kumele.com/api/v1/web3/mint-callback"
+
 # HMAC root for deterministic mint addresses. Required for minting.
 #
 # This is a DERIVATION ROOT, not a rotatable secret. Every open mint job derives its asset

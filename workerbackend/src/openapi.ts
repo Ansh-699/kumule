@@ -265,6 +265,49 @@ export const openAPISpec = {
                 },
             },
         },
+        '/api/v1/mint': {
+            post: {
+                tags: ['Payments'],
+                summary: "Kumele's backend hands off a paid order to be minted",
+                description:
+                    'Called by api.kumele.com after IT has collected payment on its own Stripe ' +
+                    'integration - this worker takes no payment here. Authenticated with ' +
+                    'X-Kumele-Signature / X-Kumele-Timestamp, HMAC-SHA256 over ' +
+                    '`${timestamp}.${rawBody}` with a shared secret; see docs/kumele-mint-service.md ' +
+                    'for the full contract. Idempotent on payment_intent_id: a repeated call never ' +
+                    'mints twice, it reports the existing job\'s current state.',
+                requestBody: {
+                    required: true,
+                    content: {
+                        'application/json': {
+                            schema: {
+                                type: 'object',
+                                required: [
+                                    'payment_intent_id', 'order_id', 'chain',
+                                    'recipient_wallet', 'quantity', 'name', 'metadata_uri',
+                                ],
+                                properties: {
+                                    payment_intent_id: { type: 'string' },
+                                    order_id: { type: 'string' },
+                                    chain: { type: 'string', enum: ['solana'] },
+                                    recipient_wallet: { type: 'string', description: 'Solana address that will own the NFT' },
+                                    quantity: { type: 'integer', enum: [1] },
+                                    name: { type: 'string' },
+                                    metadata_uri: { type: 'string', format: 'uri' },
+                                },
+                            },
+                        },
+                    },
+                },
+                responses: {
+                    '202': { description: 'Mint queued, or already in flight from an earlier call' },
+                    '200': { description: 'Replay: reports the existing minted or permanently-failed state' },
+                    '400': { description: 'Invalid request body' },
+                    '401': { description: 'Signature verification failed' },
+                    '503': { description: 'Not configured, or the platform vault cannot fund this mint' },
+                },
+            },
+        },
         '/api/admin/payments': {
             get: {
                 tags: ['Admin'],

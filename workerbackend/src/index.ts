@@ -65,6 +65,7 @@ import {
     createIntent, getPayment, stripeWebhook, scheduled, featureFlags,
     adminListPayments, adminRefundPayment,
 } from './payments'
+import { mintFromKumele } from './kumeleMint'
 import { directCryptoEnabled } from './config'
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()
@@ -197,6 +198,11 @@ app.get('/api/v1/payments/:paymentId', getPayment)
 // behind adminAuth: Stripe cannot send one, and a shared key in a webhook would be worse
 // than the signature it replaced.
 app.post('/api/v1/stripe/webhook', stripeWebhook)
+// Kumele's own backend (api.kumele.com) already collected payment on ITS OWN Stripe
+// integration and calls in here to get the NFT minted. Authenticated by a shared-secret
+// HMAC signature (X-Kumele-Signature/X-Kumele-Timestamp), not by adminAuth - a different
+// service, a different key. See docs/kumele-mint-service.md.
+app.post('/api/v1/mint', mintFromKumele)
 
 // ---------------------------------------------------------------- solana chain ops
 

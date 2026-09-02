@@ -40,5 +40,9 @@ declare namespace Cloudflare {
         STRIPE_MIN_CHARGE_MINOR?: string;  // Stripe's per-currency minimum; default 50
         FEE_QUOTE_TTL_SECONDS?: string;    // quote lifetime; default 900
         ENABLE_DIRECT_CRYPTO?: string;     // "true" reopens the escrow and wallet-mint routes
+
+        // --- kumele integration ---
+        KUMELE_MINT_API_SECRET?: string;   // shared secret for POST /api/v1/mint; 503s until set
+        KUMELE_CALLBACK_URL?: string;      // where the signed mint-outcome callback is POSTed
     }
 }

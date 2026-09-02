@@ -10,7 +10,7 @@
     "check:build": "wrangler deploy --dry-run --outdir .wrangler/dry-run",
     "check": "npm run typecheck && npm run check:build && npm run check:units",
     "//check:units": "db-flows and payment-flows need a Postgres, stripe-mock needs the stripe/stripe-mock container. All three skip loudly without them; see each file header.",
-    "check:units": "for c in security audit burn escrow mint auth-parity openapi searchnftbyasset searchnftbyowner nfts-price admin-range chains stripe web3fees mintjob flags stripe-mock db-flows payment-flows; do echo \"--- $c ---\"; tsx \"$c-check.ts\" || exit 1; done",
+    "check:units": "for c in security audit burn escrow mint auth-parity openapi searchnftbyasset searchnftbyowner nfts-price admin-range chains stripe web3fees mintjob flags stripe-mock db-flows payment-flows kumele-mint; do echo \"--- $c ---\"; tsx \"$c-check.ts\" || exit 1; done",
     "test:api": "node api-test.mjs",
     "test:security": "tsx security-check.ts",
     "//test:devnet": "Mints for real on devnet: needs a local Postgres and either a working faucet or a funded ~/.config/solana/id.json. Skips loudly without them. Run before a deploy, not on every save.",
