@@ -334,17 +334,52 @@ response body, an error message, or a frontend bundle.
 wallet-signed Solana mint and escrow routes behind a 404 without deleting the code —
 unrelated to the Kumele integration, left as-is here.
 
-## Build status
+## Build status — updated 2026-09-02
 
-The standalone flow (everything above except `POST /api/v1/mint` and the callback) is
-live and proven — see "Proof" above. `POST /api/v1/mint`, the shared-secret auth, and
-the outbound callback are **not yet built**; this document is their spec as well as a
-description of what already exists. Implementation plan:
-`docs/superpowers/plans/2026-09-02-kumele-mint-api.md`.
+**`POST /api/v1/mint` is built, deployed, and live** at
+`https://kumele-backend.ansht.workers.dev/api/v1/mint`. Verified against the live
+worker, not just locally: `/openapi.json` lists the route, and an unsigned request gets
+back a clean `401 {"error":"Signature verification failed: missing X-Kumele-Signature
+header"}` rather than a 500 or anything resembling a leak.
 
-Still open on this side: the shared secret itself needs exchanging out of band (not in
-this doc, not in any chat log, not in git). `KUMELE_CALLBACK_URL` needs Kumele's real
-callback endpoint once it exists to test against.
+Implementation plan (all five build tasks done, each independently committed and
+verified — schema, HMAC/idempotency reuse, the handler, route+config+docs wiring, the
+callback sweep): `docs/superpowers/plans/2026-09-02-kumele-mint-api.md`. Commits, in
+order:
 
-Open on Kumele's side, per their own report: `recipient_wallet` isn't captured at their
-checkout yet, so it can't be populated until that's added there.
+```
+8eff08e  db: add Payment.origin/orderId and MintJob.callback* for the Kumele mint API
+4ba00ab  refactor: export hmacSha256Hex, timingSafeEqual, VAULT_SAFETY_FACTOR, kickOff
+cd36c8e  feat: add Kumele mint API auth, validation, and idempotent handler
+226df73  feat: mount POST /api/v1/mint, wire config, document in openapi.ts
+5e43bf0  feat: sign and send the Kumele mint-outcome callback from the cron sweep
+```
+
+Verification behind that: 39/39 assertions across the new `kumele-mint-check.ts` (HMAC
+accept/reject on every failure mode, request validation, the replay-response mapping,
+the callback payload shape, a self-signed callback verifying against its own secret) —
+plus the full existing `check:units` suite (20 checks) staying green, a clean
+`wrangler deploy --dry-run`, and the Neon migration applied and confirmed with `prisma
+migrate status` → `Database schema is up to date!`.
+
+Live right now, concretely:
+- Neon has `Payment.origin`/`Payment.orderId` and `MintJob.callbackSentAt`/
+  `callbackAttempts`/`callbackLastError`.
+- `KUMELE_MINT_API_SECRET` is set as a Cloudflare secret on the deployed worker.
+- The cron sweep (`*/5 * * * *`) now also runs `sendMintCallbacks` — it's a clean no-op
+  right now because `KUMELE_CALLBACK_URL` isn't set yet, not an error state.
+
+What's still open, on each side:
+
+- **This side:** `KUMELE_MINT_API_SECRET` needs handing to Kumele out of band (not in a
+  commit, not in a public channel, not pasted into any doc). Once Kumele's callback
+  receiver exists, set `KUMELE_CALLBACK_URL` via `wrangler secret put
+  KUMELE_CALLBACK_URL` and the loop closes.
+- **Kumele's side, per their own report:** `recipient_wallet` isn't captured at
+  checkout yet, so `POST /api/v1/mint` can't be called for real until that lands. The
+  callback receiver (`POST /api/v1/web3/mint-callback`) and their dispatcher/retry sweep
+  were reported as in progress as of 2026-09-01.
+- **Neither side alone:** the real end-to-end proof — an actual signed call from
+  Kumele, an actual devnet mint, an actual signed callback delivered and verified — needs
+  both sides live simultaneously. Nothing before that point can substitute for it; the
+  39 assertions above cover logic, not the live round trip.
